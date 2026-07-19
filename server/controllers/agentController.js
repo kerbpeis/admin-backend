@@ -540,11 +540,22 @@ const buildAnswer = ({ question, terms, sources, user, context }) => {
 
   const steps = template.steps.map((step, index) => {
     const source = sources[index] || sources[0];
+    const passage = Array.isArray(source?.passages) && source.passages.length
+      ? source.passages[0]
+      : null;
     return {
       ...step,
       detail: source
         ? `${step.detail} 参考${source.typeLabel || '资料'}《${source.title}》。`
         : step.detail,
+      quote: passage
+        ? {
+          documentTitle: source.title,
+          version: source.version || null,
+          chunkIndex: passage.chunkIndex,
+          text: passage.text,
+        }
+        : null,
     };
   });
 

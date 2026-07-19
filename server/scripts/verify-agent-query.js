@@ -68,6 +68,9 @@ const main = async () => {
   assert(typeof firstPassage.text === 'string' && firstPassage.text.length >= 10, '正文段落引用内容过短或缺失');
   assert(Number.isInteger(firstPassage.chunkIndex), '正文段落引用缺少分块序号');
   assert((result.meta?.passageCount || 0) >= passageSources[0].passages.length, '元数据段落引用计数不一致');
+  const quotedSteps = result.answer.steps.filter((step) => step.quote?.text);
+  assert(quotedSteps.length > 0, '执行步骤未引用资料原文');
+  assert(quotedSteps[0].quote.documentTitle, '步骤原文引用缺少资料标题');
 
   const followup = await request('/api/agent/query', {
     method: 'POST',
