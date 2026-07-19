@@ -2,6 +2,7 @@ const { query } = require('../config/db');
 const { PERMISSIONS, hasPermission } = require('../utils/authorization');
 const { buildVisibilityFilter } = require('../utils/resourceAccess');
 const { toId } = require('../utils/mysqlUtils');
+const { recordAuditLog } = require('../utils/auditLog');
 
 const MAX_QUESTION_LENGTH = 1200;
 const MAX_CONTEXT_TEXT_LENGTH = 900;
@@ -592,25 +593,59 @@ exports.queryAgent = async (req, res) => {
         if (!sourceMap.has(key)) sourceMap.set(key, source);
       });
     const sources = Array.from(sourceMap.values()).slice(0, MAX_TOTAL_SOURCES);
+    const passageCount = sources.reduce((count, source) => count + (Array.isArray(source.passages) ? source.passages.length : 0), 0);
+
+    const answer = buildAnswer({
+      question,
+      terms,
+      sources,
+      user: req.user,
+      context,
+    });
+
+    await recordAuditLog({
+      req,
+      action: 'agent.query',
+      resourceType: 'agent_query',
+      resourceName: question.slice(0, 80),
+      metadata: {
+        question,
+        isFollowup: Boolean(context?.isFollowup),
+        followupOf: answer.followupOf,
+        referencedDocumentId: toId(referencedDocumentId) || null,
+        queryTerms: terms,
+        confidence: answer.confidence,
+        sourceCount: sources.length,
+        passageCount,
+        sources: sources.map((source) => ({
+          sourceType: source.sourceType,
+          documentId: source.documentId || null,
+          privateItemId: source.privateItemId || null,
+          readingId: source.readingId || null,
+          title: source.title,
+        })),
+      },
+    });
 
     res.json({
-      answer: buildAnswer({
-        question,
-        terms,
-        sources,
-        user: req.user,
-        context,
-      }),
+      answer,
       meta: {
         librarySourceCount: librarySources.length,
         privateSourceCount: privateSources.length,
         contextSourceCount: contextLibrarySources.length + contextPrivateSources.length,
         sourceCount: sources.length,
-        passageCount: sources.reduce((count, source) => count + (Array.isArray(source.passages) ? source.passages.length : 0), 0),
+        passageCount,
       },
     });
   } catch (err) {
     console.error('智能体检索失败:', err);
+    await recordAuditLog({
+      req,
+      action: 'agent.query',
+      resourceType: 'agent_query',
+      status: 'failure',
+      metadata: { error: err.message },
+    });
     res.status(500).json({ message: '智能体检索失败', error: err.message });
   }
 };

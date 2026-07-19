@@ -99,6 +99,15 @@ const main = async () => {
   });
   assert(emptyQuestion.message, '空问题未返回错误信息');
 
+  const auditResult = await request('/api/audit-logs?action=agent.query&limit=5', { token });
+  const queryLogs = (auditResult.logs || []).filter((log) => log.status === 'success');
+  assert(queryLogs.length >= 2, '问答日志未写入审计记录');
+  const latestLog = queryLogs[0];
+  assert(latestLog.metadata?.question, '问答日志缺少问题内容');
+  assert(Number.isInteger(latestLog.metadata?.sourceCount), '问答日志缺少引用统计');
+  assert(Array.isArray(latestLog.metadata?.sources), '问答日志缺少引用资料明细');
+  assert(latestLog.actor?.email === account.email, '问答日志操作人不一致');
+
   console.log(JSON.stringify({
     ok: true,
     checked: [
@@ -108,6 +117,7 @@ const main = async () => {
       'agent query content passages',
       'agent query followup context',
       'agent query empty question validation',
+      'agent query audit trail',
     ],
     sourceCount: result.answer.sources.length,
     passageCount: result.meta.passageCount,
