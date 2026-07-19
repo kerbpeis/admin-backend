@@ -526,9 +526,64 @@ const topicTemplates = {
   },
 };
 
+const HIGH_RISK_DISCLAIMER = '涉及高风险作业场景，所有处置必须以正式审批流程和现行有效文件为准，并落实现场确认与监护。';
+
+const highRiskPatterns = [
+  { label: '停送电', pattern: /停送电|停电|送电|断电|闭锁/ },
+  { label: '瓦斯超限', pattern: /瓦斯|超限|通风|抽采/ },
+  { label: '动火作业', pattern: /动火|明火|焊接|气割/ },
+  { label: '探放水', pattern: /探放水|水害|涌水|放水/ },
+  { label: '应急处置', pattern: /应急|撤人|事故|险情|救援/ },
+];
+
+const detectHighRiskScenarios = (question, sources) => {
+  const text = [question, ...sources.map(sourceText)].join(' ');
+  return highRiskPatterns
+    .filter(({ pattern }) => pattern.test(text))
+    .map(({ label }) => label);
+};
+
+const intentPatterns = [
+  { intent: 'checklist', label: '检查清单', pattern: /检查清单|核查清单|清单/ },
+  { intent: 'briefing', label: '班前会提示', pattern: /班前会|班前提示|班前交底|交底/ },
+  { intent: 'plan', label: '学习计划', pattern: /学习计划|复习计划|培训计划|必学/ },
+];
+
+const detectIntent = (question) => {
+  const hit = intentPatterns.find(({ pattern }) => pattern.test(question));
+  return hit ? { intent: hit.intent, label: hit.label } : { intent: 'qa', label: '问答' };
+};
+
+const MAX_CHECKLIST_GROUPS = 4;
+const MAX_CHECKLIST_ITEMS = 8;
+
+// 把命中段落按资料分组整理成可执行清单项
+const buildChecklist = (sources) => {
+  let remaining = MAX_CHECKLIST_ITEMS;
+  return sources
+    .filter((source) => Array.isArray(source.passages) && source.passages.length)
+    .slice(0, MAX_CHECKLIST_GROUPS)
+    .map((source) => {
+      const items = source.passages
+        .slice(0, Math.max(remaining, 0))
+        .map((passage) => passage.text);
+      remaining -= items.length;
+      return {
+        documentTitle: source.title,
+        version: source.version || null,
+        sourceType: source.sourceType,
+        items,
+      };
+    })
+    .filter((group) => group.items.length);
+};
+
 const buildAnswer = ({ question, terms, sources, user, context }) => {
   const topic = inferTopic(question, sources);
   const template = topicTemplates[topic] || topicTemplates.general;
+  const { intent, label: intentLabel } = detectIntent(question);
+  const checklist = intent === 'qa' ? [] : buildChecklist(sources);
+  const highRiskScenarios = detectHighRiskScenarios(question, sources);
   const topNames = sources.slice(0, 3).map((source) => `《${source.title}》`);
   const contextPrefix = context?.isFollowup && context.previousQuestion
     ? `基于上一轮“${context.previousQuestion.slice(0, 42)}${context.previousQuestion.length > 42 ? '…' : ''}”继续判断。`
@@ -537,6 +592,10 @@ const buildAnswer = ({ question, terms, sources, user, context }) => {
     ? `已在可访问资料中命中 ${sources.length} 条依据，重点参考 ${topNames.join('、')}，并结合 ${user.department || '当前部门'} / ${user.section || '当前科室'} 的权限范围整理。`
     : '当前没有命中明确资料依据，以下为通用处理框架；建议补充资料名称、作业场景或指定引用资料后再复核。';
   const summary = `${contextPrefix}${summaryCore}`;
+
+  const conclusion = intent !== 'qa' && checklist.length
+    ? `已从 ${checklist.length} 份资料整理${intentLabel}，执行前请核对资料版本与审批状态。`
+    : template.conclusion;
 
   const steps = template.steps.map((step, index) => {
     const source = sources[index] || sources[0];
@@ -560,10 +619,16 @@ const buildAnswer = ({ question, terms, sources, user, context }) => {
   });
 
   return {
-    conclusion: template.conclusion,
+    conclusion,
     summary,
     steps,
     risks: template.risks,
+    intent,
+    intentLabel,
+    checklist,
+    riskLevel: highRiskScenarios.length ? 'high' : 'normal',
+    highRiskScenarios,
+    disclaimer: highRiskScenarios.length ? HIGH_RISK_DISCLAIMER : null,
     sources,
     queryTerms: terms,
     confidence: sources.length >= 3 ? 'high' : sources.length ? 'medium' : 'low',
@@ -625,6 +690,9 @@ exports.queryAgent = async (req, res) => {
         followupOf: answer.followupOf,
         referencedDocumentId: toId(referencedDocumentId) || null,
         queryTerms: terms,
+        intent: answer.intent,
+        riskLevel: answer.riskLevel,
+        highRiskScenarios: answer.highRiskScenarios,
         confidence: answer.confidence,
         sourceCount: sources.length,
         passageCount,

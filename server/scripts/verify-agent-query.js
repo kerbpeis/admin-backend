@@ -93,6 +93,23 @@ const main = async () => {
   assert(followup.answer?.summary?.includes('基于上一轮'), '追问摘要未体现上下文');
   assert((followup.meta?.contextSourceCount || 0) > 0, '追问未复用上一轮依据');
 
+  const checklistResult = await request('/api/agent/query', {
+    method: 'POST',
+    token,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      question: '给我一份井下动火作业前的检查清单',
+    }),
+  });
+  assert(checklistResult.answer?.intent === 'checklist', '未识别检查清单意图');
+  assert(checklistResult.answer?.intentLabel === '检查清单', '意图标签不一致');
+  assert(Array.isArray(checklistResult.answer?.checklist) && checklistResult.answer.checklist.length > 0, '检查清单为空');
+  const firstGroup = checklistResult.answer.checklist[0];
+  assert(firstGroup.documentTitle && Array.isArray(firstGroup.items) && firstGroup.items.length > 0, '检查清单缺少分组条目');
+  assert(checklistResult.answer?.riskLevel === 'high', '动火场景未标记为高风险');
+  assert(checklistResult.answer?.disclaimer?.includes('以正式审批流程和现行有效文件为准'), '缺少高风险强制提醒文案');
+  assert((checklistResult.answer?.highRiskScenarios || []).includes('动火作业'), '高风险场景未识别动火作业');
+
   const emptyQuestion = await request('/api/agent/query', {
     method: 'POST',
     token,
@@ -119,6 +136,8 @@ const main = async () => {
       'agent query source metadata',
       'agent query content passages',
       'agent query followup context',
+      'agent query checklist intent',
+      'agent query high-risk disclaimer',
       'agent query empty question validation',
       'agent query audit trail',
     ],
