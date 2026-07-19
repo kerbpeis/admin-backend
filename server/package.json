@@ -1,0 +1,40 @@
+{
+  "name": "admin-backend",
+  "version": "1.0.0",
+  "description": "后台管理系统API服务",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js",
+    "db:init": "node scripts/init-mysql.js",
+    "seed": "node scripts/seed.js",
+    "verify:library-permissions": "node scripts/verify-library-permissions.js",
+    "verify:audit-logs": "node scripts/verify-audit-logs.js",
+    "verify:department-catalog": "node scripts/verify-department-catalog.js",
+    "verify:library-stats": "node scripts/verify-library-stats.js",
+    "verify:library-flow": "node scripts/verify-library-flow.js",
+    "verify:knowledge-flow": "node scripts/verify-knowledge-flow.js",
+    "verify:mobile-section-flow": "node scripts/verify-mobile-section-flow.js",
+    "verify:partner-state": "node scripts/verify-partner-state.js",
+    "verify:partner-domain": "node scripts/verify-partner-domain.js",
+    "verify:partner-flow": "node scripts/verify-partner-flow.js",
+    "verify:private-knowledge": "node scripts/verify-private-knowledge.js",
+    "verify:agent-query": "node scripts/verify-agent-query.js",
+    "index:contents": "node scripts/index-file-contents.js",
+    "verify:app": "node scripts/verify-app.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "jsonwebtoken": "^9.0.2",
+    "mammoth": "^1.12.0",
+    "multer": "^1.4.5-lts.1",
+    "mysql2": "^3.22.6",
+    "pdf-parse": "^1.1.4"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  }
+}

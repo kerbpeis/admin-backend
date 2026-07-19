@@ -1,0 +1,178 @@
+const { query, withTransaction, isDuplicateKeyError } = require('../config/db');
+const { serializePermission, serializeRole, toId, placeholders } = require('../utils/mysqlUtils');
+
+const loadPermissionsForRoles = async (roleIds) => {
+  if (!roleIds.length) return new Map();
+
+  const rows = await query(
+    `SELECT rp.role_id, p.*
+     FROM role_permissions rp
+     INNER JOIN permissions p ON p.id = rp.permission_id
+     WHERE rp.role_id IN (${placeholders(roleIds)})
+     ORDER BY p.id`,
+    roleIds
+  );
+
+  const map = new Map();
+  for (const row of rows) {
+    if (!map.has(row.role_id)) map.set(row.role_id, []);
+    map.get(row.role_id).push(serializePermission(row));
+  }
+
+  return map;
+};
+
+const getRoles = async (req, res) => {
+  try {
+    const roles = await query('SELECT * FROM roles ORDER BY id');
+    const permissionsByRole = await loadPermissionsForRoles(roles.map((role) => role.id));
+
+    res.json({
+      roles: roles.map((role) => serializeRole(role, permissionsByRole.get(role.id) || [])),
+    });
+  } catch (err) {
+    res.status(500).json({ message: '获取角色列表失败', error: err.message });
+  }
+};
+
+const saveRolePermissions = async (connection, roleId, permissionIds = []) => {
+  await connection.execute('DELETE FROM role_permissions WHERE role_id = ?', [roleId]);
+
+  for (const permissionId of permissionIds.map(toId).filter(Boolean)) {
+    await connection.execute(
+      'INSERT IGNORE INTO role_permissions (role_id, permission_id) VALUES (?, ?)',
+      [roleId, permissionId]
+    );
+  }
+};
+
+const createRole = async (req, res) => {
+  try {
+    const { name, description = '', permissions = [] } = req.body;
+    if (!name) {
+      return res.status(400).json({ message: '请输入角色名称' });
+    }
+
+    const roleId = await withTransaction(async (connection) => {
+      const [result] = await connection.execute(
+        'INSERT INTO roles (name, description) VALUES (?, ?)',
+        [name, description]
+      );
+      await saveRolePermissions(connection, result.insertId, permissions);
+      return result.insertId;
+    });
+
+    const roles = await query('SELECT * FROM roles WHERE id = ?', [roleId]);
+    const permissionsByRole = await loadPermissionsForRoles([roleId]);
+
+    res.status(201).json({
+      message: '角色创建成功',
+      role: serializeRole(roles[0], permissionsByRole.get(roleId) || []),
+    });
+  } catch (err) {
+    if (isDuplicateKeyError(err)) {
+      return res.status(400).json({ message: '该角色已存在' });
+    }
+    res.status(500).json({ message: '角色创建失败', error: err.message });
+  }
+};
+
+const getRole = async (req, res) => {
+  try {
+    const id = toId(req.params.id);
+    const rows = await query('SELECT * FROM roles WHERE id = ?', [id]);
+    if (!rows[0]) {
+      return res.status(404).json({ message: '角色不存在' });
+    }
+
+    const permissionsByRole = await loadPermissionsForRoles([id]);
+    res.json({ role: serializeRole(rows[0], permissionsByRole.get(id) || []) });
+  } catch (err) {
+    res.status(500).json({ message: '获取角色信息失败', error: err.message });
+  }
+};
+
+const updateRole = async (req, res) => {
+  try {
+    const id = toId(req.params.id);
+    const { name, description = '', permissions } = req.body;
+
+    const existing = await query('SELECT * FROM roles WHERE id = ?', [id]);
+    if (!existing[0]) {
+      return res.status(404).json({ message: '角色不存在' });
+    }
+
+    await withTransaction(async (connection) => {
+      await connection.execute('UPDATE roles SET name = ?, description = ? WHERE id = ?', [name, description, id]);
+      if (Array.isArray(permissions)) {
+        await saveRolePermissions(connection, id, permissions);
+      }
+    });
+
+    const rows = await query('SELECT * FROM roles WHERE id = ?', [id]);
+    const permissionsByRole = await loadPermissionsForRoles([id]);
+
+    res.json({
+      message: '角色更新成功',
+      role: serializeRole(rows[0], permissionsByRole.get(id) || []),
+    });
+  } catch (err) {
+    if (isDuplicateKeyError(err)) {
+      return res.status(400).json({ message: '该角色名已被使用' });
+    }
+    res.status(500).json({ message: '角色更新失败', error: err.message });
+  }
+};
+
+const deleteRole = async (req, res) => {
+  try {
+    const id = toId(req.params.id);
+    const users = await query('SELECT COUNT(*) AS total FROM user_roles WHERE role_id = ?', [id]);
+    if (users[0].total > 0) {
+      return res.status(400).json({ message: '该角色正在被用户使用，无法删除' });
+    }
+
+    const result = await query('DELETE FROM roles WHERE id = ?', [id]);
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: '角色不存在' });
+    }
+
+    res.json({ message: '角色删除成功' });
+  } catch (err) {
+    res.status(500).json({ message: '角色删除失败', error: err.message });
+  }
+};
+
+const assignPermissions = async (req, res) => {
+  try {
+    const id = toId(req.params.id);
+    const permissionIds = Array.isArray(req.body.permissionIds) ? req.body.permissionIds : [];
+
+    const existing = await query('SELECT * FROM roles WHERE id = ?', [id]);
+    if (!existing[0]) {
+      return res.status(404).json({ message: '角色不存在' });
+    }
+
+    await withTransaction((connection) => saveRolePermissions(connection, id, permissionIds));
+
+    const rows = await query('SELECT * FROM roles WHERE id = ?', [id]);
+    const permissionsByRole = await loadPermissionsForRoles([id]);
+
+    res.json({
+      message: '权限分配成功',
+      role: serializeRole(rows[0], permissionsByRole.get(id) || []),
+    });
+  } catch (err) {
+    res.status(500).json({ message: '权限分配失败', error: err.message });
+  }
+};
+
+module.exports = {
+  getRoles,
+  createRole,
+  getRole,
+  updateRole,
+  deleteRole,
+  assignPermissions,
+  loadPermissionsForRoles,
+};
