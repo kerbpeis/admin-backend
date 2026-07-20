@@ -4,6 +4,8 @@ const { buildVisibilityFilter } = require('../utils/resourceAccess');
 const { toId } = require('../utils/mysqlUtils');
 const { recordAuditLog } = require('../utils/auditLog');
 const { clauseNumberToInt } = require('../utils/fileContentIndex');
+const { buildLlmAnswer } = require('../utils/agentLlmAnswer');
+const { getLlmModel } = require('../utils/llmClient');
 
 const MAX_QUESTION_LENGTH = 1200;
 const MAX_CONTEXT_TEXT_LENGTH = 900;
@@ -630,7 +632,7 @@ const buildChecklist = (sources) => {
     .filter((group) => group.items.length);
 };
 
-const buildAnswer = ({ question, terms, sources, user, context, clauses = [] }) => {
+const buildAnswer = ({ question, terms, sources, user, context, clauses = [], llmCore = null }) => {
   const topic = inferTopic(question, sources);
   const template = topicTemplates[topic] || topicTemplates.general;
   const { intent, label: intentLabel } = detectIntent(question);
@@ -643,40 +645,44 @@ const buildAnswer = ({ question, terms, sources, user, context, clauses = [] }) 
   const summaryCore = sources.length
     ? `已在可访问资料中命中 ${sources.length} 条依据，重点参考 ${topNames.join('、')}，并结合 ${user.department || '当前部门'} / ${user.section || '当前科室'} 的权限范围整理。`
     : '当前没有命中明确资料依据，以下为通用处理框架；建议补充资料名称、作业场景或指定引用资料后再复核。';
-  const summary = `${contextPrefix}${summaryCore}`;
+  const summary = `${contextPrefix}${llmCore ? llmCore.summary : summaryCore}`;
 
-  const conclusion = clauses.length
-    ? `已直接命中 ${clauses.length} 条相关条款原文，请逐条核对后执行。`
-    : intent !== 'qa' && checklist.length
-      ? `已从 ${checklist.length} 份资料整理${intentLabel}，执行前请核对资料版本与审批状态。`
-      : template.conclusion;
+  const conclusion = llmCore
+    ? llmCore.conclusion
+    : clauses.length
+      ? `已直接命中 ${clauses.length} 条相关条款原文，请逐条核对后执行。`
+      : intent !== 'qa' && checklist.length
+        ? `已从 ${checklist.length} 份资料整理${intentLabel}，执行前请核对资料版本与审批状态。`
+        : template.conclusion;
 
-  const steps = template.steps.map((step, index) => {
-    const source = sources[index] || sources[0];
-    const passage = Array.isArray(source?.passages) && source.passages.length
-      ? source.passages[0]
-      : null;
-    return {
-      ...step,
-      detail: source
-        ? `${step.detail} 参考${source.typeLabel || '资料'}《${source.title}》。`
-        : step.detail,
-      quote: passage
-        ? {
-          documentTitle: source.title,
-          version: source.version || null,
-          chunkIndex: passage.chunkIndex,
-          text: passage.text,
-        }
-        : null,
-    };
-  });
+  const steps = llmCore
+    ? llmCore.steps
+    : template.steps.map((step, index) => {
+      const source = sources[index] || sources[0];
+      const passage = Array.isArray(source?.passages) && source.passages.length
+        ? source.passages[0]
+        : null;
+      return {
+        ...step,
+        detail: source
+          ? `${step.detail} 参考${source.typeLabel || '资料'}《${source.title}》。`
+          : step.detail,
+        quote: passage
+          ? {
+            documentTitle: source.title,
+            version: source.version || null,
+            chunkIndex: passage.chunkIndex,
+            text: passage.text,
+          }
+          : null,
+      };
+    });
 
   return {
     conclusion,
     summary,
     steps,
-    risks: template.risks,
+    risks: llmCore && llmCore.risks.length ? llmCore.risks : template.risks,
     intent,
     intentLabel,
     checklist,
@@ -684,6 +690,7 @@ const buildAnswer = ({ question, terms, sources, user, context, clauses = [] }) 
     riskLevel: highRiskScenarios.length ? 'high' : 'normal',
     highRiskScenarios,
     disclaimer: highRiskScenarios.length ? HIGH_RISK_DISCLAIMER : null,
+    generator: llmCore ? 'llm' : 'template',
     sources,
     queryTerms: terms,
     confidence: sources.length >= 3 ? 'high' : sources.length ? 'medium' : 'low',
@@ -742,6 +749,15 @@ exports.queryAgent = async (req, res) => {
     const sources = Array.from(sourceMap.values()).slice(0, MAX_TOTAL_SOURCES);
     const passageCount = sources.reduce((count, source) => count + (Array.isArray(source.passages) ? source.passages.length : 0), 0);
 
+    const llmCore = await buildLlmAnswer({
+      question,
+      intentLabel: detectIntent(question).label,
+      sources,
+      clauses: clauseMatches,
+      context,
+      user: req.user,
+    });
+
     const answer = buildAnswer({
       question,
       terms,
@@ -749,6 +765,7 @@ exports.queryAgent = async (req, res) => {
       user: req.user,
       context,
       clauses: clauseMatches,
+      llmCore,
     });
 
     await recordAuditLog({
@@ -766,6 +783,7 @@ exports.queryAgent = async (req, res) => {
         riskLevel: answer.riskLevel,
         highRiskScenarios: answer.highRiskScenarios,
         confidence: answer.confidence,
+        generator: answer.generator,
         sourceCount: sources.length,
         passageCount,
         sources: sources.map((source) => ({
@@ -787,6 +805,8 @@ exports.queryAgent = async (req, res) => {
         sourceCount: sources.length,
         passageCount,
         clauseCount: clauseMatches.length,
+        generator: answer.generator,
+        model: answer.generator === 'llm' ? getLlmModel() : null,
       },
     });
   } catch (err) {

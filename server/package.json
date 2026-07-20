@@ -20,6 +20,7 @@
     "verify:partner-flow": "node scripts/verify-partner-flow.js",
     "verify:private-knowledge": "node scripts/verify-private-knowledge.js",
     "verify:agent-query": "node scripts/verify-agent-query.js",
+    "verify:agent-llm": "node scripts/verify-agent-llm.js",
     "index:contents": "node scripts/index-file-contents.js",
     "verify:app": "node scripts/verify-app.js"
   },
