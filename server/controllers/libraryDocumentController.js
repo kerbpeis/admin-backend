@@ -415,9 +415,10 @@ const buildDocumentFilters = async (req) => {
       OR f.approver LIKE ?
       OR d.name LIKE ?
       OR p.name LIKE ?
+      OR f.id IN (SELECT file_id FROM file_content_chunks WHERE content LIKE ?)
     )`);
     const keyword = `%${search}%`;
-    params.push(keyword, keyword, keyword, keyword, keyword, keyword, keyword, keyword);
+    params.push(keyword, keyword, keyword, keyword, keyword, keyword, keyword, keyword, keyword);
   }
 
   return { where: `WHERE ${filters.join(' AND ')}`, params };

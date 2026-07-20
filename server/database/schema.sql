@@ -167,6 +167,19 @@ CREATE TABLE IF NOT EXISTS file_content_chunks (
   CONSTRAINT fk_file_content_chunks_file FOREIGN KEY (file_id) REFERENCES files (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS file_clauses (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  file_id BIGINT UNSIGNED NOT NULL,
+  clause_no VARCHAR(40) NOT NULL,
+  clause_no_num INT NULL,
+  content TEXT NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_file_clauses_file (file_id),
+  KEY idx_file_clauses_no_num (clause_no_num),
+  CONSTRAINT fk_file_clauses_file FOREIGN KEY (file_id) REFERENCES files (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS file_favorites (
   file_id BIGINT UNSIGNED NOT NULL,
   user_id BIGINT UNSIGNED NOT NULL,

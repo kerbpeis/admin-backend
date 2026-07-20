@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { pool, query, withTransaction } = require('../config/db');
 const { PERMISSIONS } = require('../utils/authorization');
+const { extractClauses } = require('../utils/fileContentIndex');
 require('dotenv').config();
 
 const permissions = [
@@ -87,6 +88,13 @@ const libraryDocuments = [
     color: '#1F6F8B',
     tags: ['安全规程', '全员必学', '条款索引'],
     summary: '汇总采掘、通风、机电、运输、防治水等关键条款，支持按岗位和场景快速检索。',
+    clauses: [
+      '第一条 采掘工作面开工前，必须核对作业规程、地质说明书和安全技术措施的现行有效版本。',
+      '第二条 瓦斯检查实行巡回检查与定点监测相结合，发现超限立即停止作业、撤出人员并上报。',
+      '第三条 井下停送电必须执行工作票制度，停电后验电、放电、闭锁并悬挂警示牌。',
+      '第四条 探放水坚持有疑必探、先探后掘，超前距离不得小于规定值，异常出水立即停钻上报。',
+      '第五条 井下动火作业必须办理审批手续，现场配备消防器材并设专职监护人。',
+    ],
     versions: [
       { label: '2022版', date: '2022-01-01', note: '历史版本，仅用于差异追溯' },
       { label: '2026版', date: '2026-05-18', note: '补充智能化开采与重大灾害治理条款索引' },
@@ -107,6 +115,12 @@ const libraryDocuments = [
     color: '#2F855A',
     tags: ['综采', '过断层', '安全措施'],
     summary: '覆盖风险辨识、支护参数、超前探查、现场确认、审批流和班前贯彻记录。',
+    clauses: [
+      '第一条 揭露断层前完成地质资料联合会审，生产、技术、通风、机电、安全岗位共同确认风险。',
+      '第二条 过构造期间支护参数按顶板破碎程度动态调整，超前支护距离不得小于二十米。',
+      '第三条 每班开工前由班组长组织风险交底并签字确认，未交底不得开工。',
+      '第四条 构造带附近加强瓦斯和涌水观测，发现异常立即停工撤人并上报调度。',
+    ],
     versions: [
       { label: 'V3.1', date: '2026-03-01', note: '调整超前支护参数填写项' },
       { label: 'V3.2', date: '2026-05-16', note: '新增断层揭露前联合确认清单' },
@@ -127,6 +141,12 @@ const libraryDocuments = [
     color: '#D97706',
     tags: ['瓦斯抽采', '达标评判', '记录表'],
     summary: '规范抽采参数、计量校验、钻孔验收、评判结论和异常处理记录。',
+    clauses: [
+      '第一条 抽采计量装置每月校验一次，校验记录由专人归档保存。',
+      '第二条 抽采达标评判以实测残余瓦斯含量和瓦斯压力为依据，数据不全不得出具评判结论。',
+      '第三条 钻孔施工完成后四十八小时内完成封孔质量验收。',
+      '第四条 评判结论为不达标时，制定补充抽采措施并重新组织评判。',
+    ],
     versions: [
       { label: 'V1.6', date: '2025-09-18', note: '历史版本，仅用于差异追溯' },
       { label: 'V2.0', date: '2026-05-12', note: '统一抽采计量与复核口径' },
@@ -256,6 +276,9 @@ const buildSeedFileContent = (document, version) => [
   version.note,
   '',
   '说明：此文件为后端种子数据生成的资料库原型文本，正式环境应替换为真实源文件。',
+  ...(Array.isArray(document.clauses) && document.clauses.length
+    ? ['', '条款摘录', ...document.clauses]
+    : []),
 ].join('\n');
 
 const ensureSeedFile = (document, version, versionNumber) => {
@@ -380,6 +403,18 @@ const upsertLibraryDocuments = async (connection, uploaderId) => {
           version.note,
           version.date,
         ]
+      );
+    }
+
+    // 条款入库：与正文索引口径一致，便于“第X条”问题直接命中条款原文
+    await connection.execute('DELETE FROM file_clauses WHERE file_id = ?', [fileId]);
+    const clauses = extractClauses(buildSeedFileContent(document, currentVersion));
+    if (clauses.length) {
+      const clauseValues = clauses.map((clause) => [fileId, clause.clauseNo, clause.clauseNoNum, clause.content]);
+      const clausePlaceholders = clauseValues.map(() => '(?, ?, ?, ?)').join(', ');
+      await connection.execute(
+        `INSERT INTO file_clauses (file_id, clause_no, clause_no_num, content) VALUES ${clausePlaceholders}`,
+        clauseValues.flat()
       );
     }
   }

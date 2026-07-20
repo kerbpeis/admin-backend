@@ -3,6 +3,7 @@ const { PERMISSIONS, hasPermission } = require('../utils/authorization');
 const { buildVisibilityFilter } = require('../utils/resourceAccess');
 const { toId } = require('../utils/mysqlUtils');
 const { recordAuditLog } = require('../utils/auditLog');
+const { clauseNumberToInt } = require('../utils/fileContentIndex');
 
 const MAX_QUESTION_LENGTH = 1200;
 const MAX_CONTEXT_TEXT_LENGTH = 900;
@@ -259,6 +260,57 @@ const buildLikeFilter = (terms, fields) => {
 };
 
 const trimPassage = (text) => String(text || '').replace(/\s+/g, ' ').trim().slice(0, PASSAGE_SNIPPET_CHARS);
+
+const CLAUSE_QUERY_RE = /第\s*([0-9零一二两三四五六七八九十百千]+)\s*条/g;
+const MAX_CLAUSE_MATCHES = 6;
+
+// 从问题中提取“第X条”引用，返回条款数值（去重，最多 4 个）
+const extractClauseNumbers = (question) => {
+  const numbers = [];
+  const regex = new RegExp(CLAUSE_QUERY_RE.source, 'g');
+  let match = regex.exec(question);
+  while (match && numbers.length < 4) {
+    const value = clauseNumberToInt(match[1]);
+    if (value) numbers.push(value);
+    match = regex.exec(question);
+  }
+  return unique(numbers);
+};
+
+// 按条款号直接命中资料正文条款，按资料标题与问题的相关度排序
+const fetchClauseMatches = async (user, clauseNumbers, terms) => {
+  if (!clauseNumbers.length || !hasPermission(user, PERMISSIONS.FILE_READ)) return [];
+  const visibilityFilter = await buildVisibilityFilter(user, 'f', 'uploaded_by');
+  const rows = await query(
+    `SELECT fc.file_id, fc.clause_no, fc.clause_no_num, fc.content,
+       f.name AS file_name, f.version_label, f.current_version, f.updated_at
+     FROM file_clauses fc
+     JOIN files f ON f.id = fc.file_id
+     WHERE f.status = 'active' AND ${visibilityFilter.sql}
+       AND fc.clause_no_num IN (${clauseNumbers.map(() => '?').join(',')})
+     ORDER BY f.updated_at DESC, fc.clause_no_num ASC
+     LIMIT 24`,
+    [...visibilityFilter.params, ...clauseNumbers]
+  );
+
+  const titleRelevance = (title) => {
+    const lower = String(title || '').toLowerCase();
+    return terms.reduce((score, term) => score + (lower.includes(String(term).toLowerCase()) ? 1 : 0), 0);
+  };
+
+  return rows
+    .map((row) => ({
+      fileId: String(row.file_id),
+      documentTitle: row.file_name,
+      version: row.version_label || `V${row.current_version || 1}`,
+      clauseNo: row.clause_no,
+      clauseNoNum: Number(row.clause_no_num),
+      text: trimPassage(row.content),
+      relevance: titleRelevance(row.file_name),
+    }))
+    .sort((a, b) => b.relevance - a.relevance || a.clauseNoNum - b.clauseNoNum)
+    .slice(0, MAX_CLAUSE_MATCHES);
+};
 
 const scoreChunkContent = (content, terms) => {
   const lower = String(content || '').toLowerCase();
@@ -578,7 +630,7 @@ const buildChecklist = (sources) => {
     .filter((group) => group.items.length);
 };
 
-const buildAnswer = ({ question, terms, sources, user, context }) => {
+const buildAnswer = ({ question, terms, sources, user, context, clauses = [] }) => {
   const topic = inferTopic(question, sources);
   const template = topicTemplates[topic] || topicTemplates.general;
   const { intent, label: intentLabel } = detectIntent(question);
@@ -593,9 +645,11 @@ const buildAnswer = ({ question, terms, sources, user, context }) => {
     : '当前没有命中明确资料依据，以下为通用处理框架；建议补充资料名称、作业场景或指定引用资料后再复核。';
   const summary = `${contextPrefix}${summaryCore}`;
 
-  const conclusion = intent !== 'qa' && checklist.length
-    ? `已从 ${checklist.length} 份资料整理${intentLabel}，执行前请核对资料版本与审批状态。`
-    : template.conclusion;
+  const conclusion = clauses.length
+    ? `已直接命中 ${clauses.length} 条相关条款原文，请逐条核对后执行。`
+    : intent !== 'qa' && checklist.length
+      ? `已从 ${checklist.length} 份资料整理${intentLabel}，执行前请核对资料版本与审批状态。`
+      : template.conclusion;
 
   const steps = template.steps.map((step, index) => {
     const source = sources[index] || sources[0];
@@ -626,6 +680,7 @@ const buildAnswer = ({ question, terms, sources, user, context }) => {
     intent,
     intentLabel,
     checklist,
+    clauses,
     riskLevel: highRiskScenarios.length ? 'high' : 'normal',
     highRiskScenarios,
     disclaimer: highRiskScenarios.length ? HIGH_RISK_DISCLAIMER : null,
@@ -653,7 +708,23 @@ exports.queryAgent = async (req, res) => {
     const questionTerms = extractTerms(question);
     const contextTerms = extractContextTerms(context);
     const terms = mergeTerms(questionTerms, contextTerms);
-    const contentPassages = await fetchContentPassages(req.user, terms);
+    const clauseNumbers = extractClauseNumbers(question);
+    const [contentPassages, clauseMatches] = await Promise.all([
+      fetchContentPassages(req.user, terms),
+      fetchClauseMatches(req.user, clauseNumbers, terms),
+    ]);
+
+    // 条款原文作为最高优先级的段落引用并入正文命中，供步骤引用和清单使用
+    clauseMatches.forEach((clause) => {
+      const entry = contentPassages.get(clause.fileId) || { score: 0, passages: [] };
+      entry.score += 12;
+      entry.passages = [
+        { chunkIndex: -1, text: `${clause.clauseNo}：${clause.text}` },
+        ...entry.passages,
+      ].slice(0, MAX_PASSAGES_PER_FILE);
+      contentPassages.set(clause.fileId, entry);
+    });
+
     const [librarySources, privateSources, contextLibrarySources, contextPrivateSources] = await Promise.all([
       fetchLibrarySources(req.user, terms, referencedDocumentId, contentPassages),
       fetchPrivateSources(req.user.id, terms),
@@ -677,6 +748,7 @@ exports.queryAgent = async (req, res) => {
       sources,
       user: req.user,
       context,
+      clauses: clauseMatches,
     });
 
     await recordAuditLog({
@@ -714,6 +786,7 @@ exports.queryAgent = async (req, res) => {
         contextSourceCount: contextLibrarySources.length + contextPrivateSources.length,
         sourceCount: sources.length,
         passageCount,
+        clauseCount: clauseMatches.length,
       },
     });
   } catch (err) {
