@@ -314,6 +314,21 @@ const fetchClauseMatches = async (user, clauseNumbers, terms) => {
     .slice(0, MAX_CLAUSE_MATCHES);
 };
 
+// 智能体 LLM 每日限流：AGENT_LLM_DAILY_LIMIT 未配置或为 0 时不限
+const getLlmDailyLimit = () => Number(process.env.AGENT_LLM_DAILY_LIMIT) || 0;
+
+// 统计用户当天已发生的 LLM 生成次数（基于审计日志，按自然日计数）
+const countTodayLlmCalls = async (userId) => {
+  const rows = await query(
+    `SELECT COUNT(*) AS c FROM audit_logs
+     WHERE actor_id = ? AND action = 'agent.query' AND status = 'success'
+       AND created_at >= CURDATE()
+       AND JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.generator')) = 'llm'`,
+    [userId]
+  );
+  return Number(rows[0]?.c) || 0;
+};
+
 const scoreChunkContent = (content, terms) => {
   const lower = String(content || '').toLowerCase();
   if (!lower) return 0;
@@ -749,7 +764,14 @@ exports.queryAgent = async (req, res) => {
     const sources = Array.from(sourceMap.values()).slice(0, MAX_TOTAL_SOURCES);
     const passageCount = sources.reduce((count, source) => count + (Array.isArray(source.passages) ? source.passages.length : 0), 0);
 
-    const llmCore = await buildLlmAnswer({
+    const llmDailyLimit = getLlmDailyLimit();
+    let llmLimited = false;
+    if (llmDailyLimit > 0) {
+      const usedToday = await countTodayLlmCalls(req.user.id);
+      llmLimited = usedToday >= llmDailyLimit;
+    }
+
+    const llmCore = llmLimited ? null : await buildLlmAnswer({
       question,
       intentLabel: detectIntent(question).label,
       sources,
@@ -767,6 +789,9 @@ exports.queryAgent = async (req, res) => {
       clauses: clauseMatches,
       llmCore,
     });
+    if (llmLimited) {
+      answer.notice = '今日 AI 生成次数已达上限，本次回答由本地资料模板生成';
+    }
 
     await recordAuditLog({
       req,
@@ -784,6 +809,8 @@ exports.queryAgent = async (req, res) => {
         highRiskScenarios: answer.highRiskScenarios,
         confidence: answer.confidence,
         generator: answer.generator,
+        llmUsage: llmCore?.usage || null,
+        llmLimited,
         sourceCount: sources.length,
         passageCount,
         sources: sources.map((source) => ({
@@ -807,6 +834,8 @@ exports.queryAgent = async (req, res) => {
         clauseCount: clauseMatches.length,
         generator: answer.generator,
         model: answer.generator === 'llm' ? getLlmModel() : null,
+        llmLimited,
+        llmDailyLimit: llmDailyLimit || null,
       },
     });
   } catch (err) {
@@ -819,5 +848,48 @@ exports.queryAgent = async (req, res) => {
       metadata: { error: err.message },
     });
     res.status(500).json({ message: '智能体检索失败', error: err.message });
+  }
+};
+
+// 智能体用量统计（近 7 天，按天聚合）：问答总量、LLM 生成次数与 token 消耗
+exports.getAgentUsageStats = async (req, res) => {
+  try {
+    const rows = await query(
+      `SELECT DATE(created_at) AS day,
+         COUNT(*) AS query_count,
+         SUM(JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.generator')) = 'llm') AS llm_count,
+         COALESCE(SUM(CAST(JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.llmUsage.promptTokens')) AS UNSIGNED)), 0) AS prompt_tokens,
+         COALESCE(SUM(CAST(JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.llmUsage.completionTokens')) AS UNSIGNED)), 0) AS completion_tokens
+       FROM audit_logs
+       WHERE action = 'agent.query' AND status = 'success'
+         AND created_at >= DATE_SUB(CURDATE(), INTERVAL 6 DAY)
+       GROUP BY DATE(created_at)
+       ORDER BY day DESC`
+    );
+
+    const days = rows.map((row) => ({
+      day: row.day instanceof Date ? row.day.toISOString().slice(0, 10) : String(row.day).slice(0, 10),
+      queryCount: Number(row.query_count),
+      llmCount: Number(row.llm_count),
+      promptTokens: Number(row.prompt_tokens),
+      completionTokens: Number(row.completion_tokens),
+      totalTokens: Number(row.prompt_tokens) + Number(row.completion_tokens),
+    }));
+
+    res.json({
+      dailyLimit: getLlmDailyLimit() || null,
+      model: getLlmModel(),
+      days,
+      totals: days.reduce((acc, day) => ({
+        queryCount: acc.queryCount + day.queryCount,
+        llmCount: acc.llmCount + day.llmCount,
+        promptTokens: acc.promptTokens + day.promptTokens,
+        completionTokens: acc.completionTokens + day.completionTokens,
+        totalTokens: acc.totalTokens + day.totalTokens,
+      }), { queryCount: 0, llmCount: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0 }),
+    });
+  } catch (err) {
+    console.error('智能体用量统计失败:', err);
+    res.status(500).json({ message: '智能体用量统计失败', error: err.message });
   }
 };

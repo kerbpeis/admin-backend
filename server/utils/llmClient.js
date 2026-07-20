@@ -71,7 +71,16 @@ const chatJsonCompletion = async ({ system, user, temperature = 0.2 }) => {
   const data = await response.json();
   const content = data?.choices?.[0]?.message?.content;
   try {
-    return parseJsonContent(content);
+    return {
+      content: parseJsonContent(content),
+      usage: data?.usage
+        ? {
+          promptTokens: Number(data.usage.prompt_tokens) || 0,
+          completionTokens: Number(data.usage.completion_tokens) || 0,
+          totalTokens: Number(data.usage.total_tokens) || 0,
+        }
+        : null,
+    };
   } catch (err) {
     throw new Error(`模型返回解析失败：${err.message}`);
   }

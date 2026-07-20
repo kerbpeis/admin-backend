@@ -96,11 +96,12 @@ const sanitizeAnswer = (raw, sources) => {
 const buildLlmAnswer = async ({ question, intentLabel, sources = [], clauses = [], context, user }) => {
   if (!isLlmConfigured()) return null;
   try {
-    const raw = await chatJsonCompletion({
+    const { content, usage } = await chatJsonCompletion({
       system: SYSTEM_PROMPT,
       user: buildUserPrompt({ question, intentLabel, sources, clauses, context, user }),
     });
-    return sanitizeAnswer(raw, sources);
+    const answer = sanitizeAnswer(content, sources);
+    return answer ? { ...answer, usage } : null;
   } catch (err) {
     console.warn('LLM 回答生成失败，回退模板回答:', err.message);
     return null;
