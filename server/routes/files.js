@@ -59,7 +59,7 @@ const storage = multer.diskStorage({
   }
 });
 
-// 文件过滤器
+// 文件过滤器：支持 Tika 可解析的 Office / PDF / 文本 / 网页 / RTF 等格式
 const fileFilter = (req, file, cb) => {
   const allowedTypes = [
     'application/pdf',
@@ -69,13 +69,20 @@ const fileFilter = (req, file, cb) => {
     'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     'application/vnd.ms-powerpoint',
     'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    'application/rtf',
+    'text/rtf',
+    'text/html',
+    'text/plain',
+    'text/markdown',
+    'application/json',
+    'application/xml',
+    'text/xml',
+    'text/csv',
     'image/jpeg',
     'image/png',
     'image/gif',
-    'text/plain',
-    'text/markdown'
   ];
-  
+
   if (allowedTypes.includes(file.mimetype)) {
     cb(null, true);
   } else {

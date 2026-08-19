@@ -1,6 +1,8 @@
 const fs = require('fs');
 const path = require('path');
 const { query } = require('../config/db');
+const { extractText: extractWithTika } = require('./tikaClient');
+const { isEmbeddingConfigured, generateEmbeddings } = require('./embeddingClient');
 
 // 单份资料最多入库的字符/段落数，避免超大文件拖垮检索。
 const MAX_EXTRACT_CHARS = 120000;
@@ -24,8 +26,15 @@ const normalizeExtractedText = (text) => String(text || '')
   .trim()
   .slice(0, MAX_EXTRACT_CHARS);
 
+// 优先用 Apache Tika 提取正文（支持 PDF/Office/TXT/HTML 等更多格式），
+// Tika 不可用时按扩展名回退到原有解析器，保证默认行为不变。
 const extractRawText = async (absolutePath, extension) => {
   const ext = String(extension || path.extname(absolutePath).replace('.', '')).toLowerCase();
+
+  const tikaText = await extractWithTika(absolutePath);
+  if (tikaText && tikaText.trim().length > 0) {
+    return tikaText;
+  }
 
   if (TEXT_EXTENSIONS.has(ext)) {
     return fs.promises.readFile(absolutePath, 'utf8');
@@ -178,6 +187,24 @@ const indexFileContent = async (fileId, storedPath, extension) => {
       `INSERT INTO file_content_chunks (file_id, chunk_index, content, char_count) VALUES ${placeholders}`,
       values.flat()
     );
+
+    // 可选：为 chunks 生成向量嵌入，失败不影响索引入库
+    if (isEmbeddingConfigured()) {
+      try {
+        const embeddings = await generateEmbeddings(chunks);
+        for (let index = 0; index < chunks.length; index += 1) {
+          const embedding = embeddings[index];
+          if (Array.isArray(embedding) && embedding.length > 0) {
+            await query(
+              'UPDATE file_content_chunks SET embedding = ? WHERE file_id = ? AND chunk_index = ?',
+              [JSON.stringify(embedding), fileId, index]
+            );
+          }
+        }
+      } catch (err) {
+        console.warn(`生成 chunks embedding 失败 (file ${fileId}):`, err.message);
+      }
+    }
   }
 
   await query('DELETE FROM file_clauses WHERE file_id = ?', [fileId]);

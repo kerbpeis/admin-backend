@@ -6,6 +6,8 @@ const { recordAuditLog } = require('../utils/auditLog');
 const { clauseNumberToInt } = require('../utils/fileContentIndex');
 const { buildLlmAnswer } = require('../utils/agentLlmAnswer');
 const { getLlmModel } = require('../utils/llmClient');
+const { isEmbeddingConfigured, generateEmbedding } = require('../utils/embeddingClient');
+const { cosineSimilarity } = require('../utils/vectorSearch');
 const answerCache = require('../utils/agentAnswerCache');
 const { sendServerError } = require('../utils/serverError');
 
@@ -367,7 +369,8 @@ const scoreChunkContent = (content, terms) => {
 };
 
 // 在资料正文分块索引中检索命中段落，返回 Map: fileId -> { score, passages }
-const fetchContentPassages = async (user, terms) => {
+// 当 embedding 配置可用时，先按关键词召回候选，再用问题向量与 chunk 向量的余弦相似度重排。
+const fetchContentPassages = async (user, terms, question = '') => {
   const passages = new Map();
   if (!terms.length || !hasPermission(user, PERMISSIONS.FILE_READ)) return passages;
 
@@ -377,7 +380,7 @@ const fetchContentPassages = async (user, terms) => {
   if (!likeFilter.sql) return passages;
 
   const rows = await query(
-    `SELECT c.file_id, c.chunk_index, c.content
+    `SELECT c.file_id, c.chunk_index, c.content, c.embedding
      FROM file_content_chunks c
      JOIN files f ON f.id = c.file_id
      WHERE f.status = 'active' AND ${companyFilter.sql} AND ${visibilityFilter.sql}${likeFilter.sql}
@@ -386,13 +389,48 @@ const fetchContentPassages = async (user, terms) => {
     [...companyFilter.params, ...visibilityFilter.params, ...likeFilter.params]
   );
 
+  let questionEmbedding = null;
+  const useEmbedding = isEmbeddingConfigured() && String(question || '').trim().length > 0;
+  if (useEmbedding) {
+    try {
+      questionEmbedding = await generateEmbedding(question);
+    } catch (err) {
+      console.warn('生成问题 embedding 失败:', err.message);
+    }
+  }
+
+  const parseEmbedding = (value) => {
+    if (!value) return null;
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  };
+
   const byFile = new Map();
   rows.forEach((row) => {
     const key = String(row.file_id);
     const entry = byFile.get(key) || { fileId: row.file_id, score: 0, chunks: [] };
-    const chunkScore = scoreChunkContent(row.content, terms);
-    entry.score += chunkScore;
-    entry.chunks.push({ chunkIndex: row.chunk_index, text: row.content, score: chunkScore });
+    const keywordScore = scoreChunkContent(row.content, terms);
+    let vectorScore = 0;
+    if (questionEmbedding) {
+      const chunkEmbedding = parseEmbedding(row.embedding);
+      if (chunkEmbedding) {
+        vectorScore = cosineSimilarity(questionEmbedding, chunkEmbedding);
+      }
+    }
+    // 综合分：关键词命中分 + 向量相似度分（向量分范围 [-1,1]，这里作为加成项）
+    const combinedScore = keywordScore + (vectorScore > 0 ? vectorScore * 5 : 0);
+    entry.score += keywordScore;
+    entry.chunks.push({
+      chunkIndex: row.chunk_index,
+      text: row.content,
+      score: keywordScore,
+      vectorScore,
+      combinedScore,
+    });
     byFile.set(key, entry);
   });
 
@@ -401,9 +439,10 @@ const fetchContentPassages = async (user, terms) => {
     .sort((a, b) => b.score - a.score)
     .slice(0, MAX_PASSAGE_FILES)
     .forEach((entry) => {
+      const sortKey = useEmbedding ? 'combinedScore' : 'score';
       const topChunks = entry.chunks
-        .filter((chunk) => chunk.score > 0)
-        .sort((a, b) => b.score - a.score || a.chunkIndex - b.chunkIndex)
+        .filter((chunk) => chunk[sortKey] > 0)
+        .sort((a, b) => b[sortKey] - a[sortKey] || a.chunkIndex - b.chunkIndex)
         .slice(0, MAX_PASSAGES_PER_FILE)
         .sort((a, b) => a.chunkIndex - b.chunkIndex)
         .map((chunk) => ({ chunkIndex: chunk.chunkIndex, text: trimPassage(chunk.text) }));
@@ -791,7 +830,7 @@ exports.queryAgent = async (req, res) => {
     const terms = mergeTerms(questionTerms, contextTerms);
     const clauseNumbers = extractClauseNumbers(question);
     const [contentPassages, clauseMatches] = await Promise.all([
-      fetchContentPassages(req.user, terms),
+      fetchContentPassages(req.user, terms, question),
       fetchClauseMatches(req.user, clauseNumbers, terms),
     ]);
 

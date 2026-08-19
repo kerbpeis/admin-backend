@@ -184,9 +184,11 @@ CREATE TABLE IF NOT EXISTS file_content_chunks (
   chunk_index INT NOT NULL,
   content TEXT NOT NULL,
   char_count INT UNSIGNED NOT NULL DEFAULT 0,
+  embedding JSON NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   UNIQUE KEY uk_file_content_chunks_file_index (file_id, chunk_index),
+  KEY idx_file_content_chunks_file (file_id),
   CONSTRAINT fk_file_content_chunks_file FOREIGN KEY (file_id) REFERENCES files (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

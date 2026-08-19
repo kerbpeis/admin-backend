@@ -68,6 +68,9 @@ const runMigrations = async (connection) => {
   await ensureIndex(connection, 'audit_logs', 'idx_audit_logs_generator', 'INDEX idx_audit_logs_generator (actor_id, action, generator, created_at)');
   await ensureIndex(connection, 'audit_logs', 'idx_audit_logs_model', 'INDEX idx_audit_logs_model (actor_id, action, model, created_at)');
 
+  await ensureColumn(connection, 'file_content_chunks', 'embedding', 'embedding JSON NULL');
+  await ensureIndex(connection, 'file_content_chunks', 'idx_file_content_chunks_file', 'INDEX idx_file_content_chunks_file (file_id)');
+
   await dropIndexIfExists(connection, 'departments', 'uk_departments_name');
   await dropIndexIfExists(connection, 'departments', 'uk_departments_company_name');
   await ensureIndex(connection, 'departments', 'uk_departments_company_type_name', 'UNIQUE KEY uk_departments_company_type_name (company_id, type, name)');
