@@ -35,6 +35,12 @@ const clampPageSize = (value, fallback = 20, max = 100) => {
   return Math.min(parsed, max);
 };
 
+// 统一解析 page / limit，page 最小为 1，limit 默认 20、最大 100
+const parsePageAndLimit = (query, fallbackLimit = 20, maxLimit = 100) => ({
+  page: Math.max(1, Number.parseInt(query?.page, 10) || 1),
+  limit: clampPageSize(query?.limit, fallbackLimit, maxLimit),
+});
+
 const stringifyTags = (value) => {
   if (!value) return null;
   if (Array.isArray(value)) return JSON.stringify(value.filter(Boolean));
@@ -234,6 +240,7 @@ module.exports = {
   parseTags,
   firstPresent,
   clampPageSize,
+  parsePageAndLimit,
   stringifyTags,
   serializePermission,
   serializeRole,

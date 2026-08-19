@@ -1,6 +1,6 @@
 const bcrypt = require('bcryptjs');
 const { query, withTransaction, isDuplicateKeyError } = require('../config/db');
-const { serializeRole, serializeUser, toId, placeholders, firstPresent } = require('../utils/mysqlUtils');
+const { serializeRole, serializeUser, toId, placeholders, firstPresent, parsePageAndLimit } = require('../utils/mysqlUtils');
 const { PERMISSIONS, hasPermission } = require('../utils/authorization');
 const { getScopedCompanyId } = require('../utils/resourceAccess');
 const { loadPermissionsForRoles } = require('./roleController');
@@ -40,8 +40,7 @@ const assignRoleIds = async (connection, userId, roleIds = []) => {
 
 const getUsers = async (req, res) => {
   try {
-    const page = Number.parseInt(req.query.page, 10) || 1;
-    const limit = Number.parseInt(req.query.limit, 10) || 10;
+    const { page, limit } = parsePageAndLimit(req.query, 10, 100);
     const search = req.query.search || '';
     const department = req.query.department || '';
     const companyId = getScopedCompanyId(req.user, req.query.companyId);
@@ -102,6 +101,10 @@ const createUser = async (req, res) => {
       return res.status(400).json({ message: validation.message, field: validation.field });
     }
     const { name, email, password, department, section } = validation.values;
+
+    if (roles !== undefined && !Array.isArray(roles)) {
+      return res.status(400).json({ message: '角色列表必须是数组', field: 'roles' });
+    }
 
     const passwordHash = await bcrypt.hash(password, 12);
     const canGrantAdmin = hasPermission(req.user, PERMISSIONS.USER_GRANT_ADMIN);
