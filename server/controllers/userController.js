@@ -168,6 +168,9 @@ const updateUser = async (req, res) => {
   try {
     const id = toId(req.params.id);
     const { password, isAdmin = false, roles } = req.body;
+    if (roles !== undefined && !Array.isArray(roles)) {
+      return res.status(400).json({ message: '角色列表必须是数组', field: 'roles' });
+    }
     const companyId = getScopedCompanyId(req.user, req.body.companyId || req.query.companyId);
 
     const existing = await query(
@@ -279,7 +282,10 @@ const deleteUser = async (req, res) => {
 const assignRoles = async (req, res) => {
   try {
     const id = toId(req.params.id);
-    const roleIds = Array.isArray(req.body.roleIds) ? req.body.roleIds : [];
+    if (!Array.isArray(req.body.roleIds)) {
+      return res.status(400).json({ message: 'roleIds 必须是数组', field: 'roleIds' });
+    }
+    const roleIds = req.body.roleIds;
     const companyId = getScopedCompanyId(req.user, req.body.companyId || req.query.companyId);
 
     const existing = await query(

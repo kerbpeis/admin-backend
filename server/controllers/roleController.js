@@ -114,6 +114,9 @@ const updateRole = async (req, res) => {
   try {
     const id = toId(req.params.id);
     const { permissions } = req.body;
+    if (permissions !== undefined && !Array.isArray(permissions)) {
+      return res.status(400).json({ message: '权限列表必须是数组', field: 'permissions' });
+    }
 
     const existing = await query('SELECT * FROM roles WHERE id = ?', [id]);
     if (!existing[0]) {

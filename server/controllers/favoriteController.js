@@ -1,5 +1,5 @@
 const { query } = require('../config/db');
-const { serializeFile, serializeKnowledgePoint, toId } = require('../utils/mysqlUtils');
+const { serializeFile, serializeKnowledgePoint, toId, parsePageAndLimit } = require('../utils/mysqlUtils');
 const {
   buildVisibilityFilter,
   canReadScopedResource,
@@ -148,24 +148,33 @@ exports.getFavorites = async (req, res) => {
       return res.status(400).json({ message: '收藏类型不正确' });
     }
 
-    const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 200);
+    const { page, limit } = parsePageAndLimit(req.query, 100, 200);
+    const offset = (page - 1) * limit;
     const favorites = [];
 
     if ((type === 'all' || type === 'file') && canReadFiles(req.user)) {
-      favorites.push(...await listFileFavorites(req.user, limit));
+      favorites.push(...await listFileFavorites(req.user, limit + offset));
     } else if (type === 'file') {
       return res.status(403).json({ message: '没有权限查看文件收藏' });
     }
 
     if ((type === 'all' || type === 'knowledge_point') && canReadKnowledgePoints(req.user)) {
-      favorites.push(...await listKnowledgePointFavorites(req.user, limit));
+      favorites.push(...await listKnowledgePointFavorites(req.user, limit + offset));
     } else if (type === 'knowledge_point') {
       return res.status(403).json({ message: '没有权限查看文件夹收藏' });
     }
 
     favorites.sort((a, b) => new Date(b.favoriteCreatedAt || 0).getTime() - new Date(a.favoriteCreatedAt || 0).getTime());
 
-    res.json({ favorites: favorites.slice(0, limit) });
+    const total = favorites.length;
+    res.json({
+      favorites: favorites.slice(offset, offset + limit),
+      pagination: {
+        current: page,
+        pages: Math.ceil(total / limit),
+        total,
+      },
+    });
   } catch (err) {
     sendServerError(res, err, '获取收藏列表失败');
   }
