@@ -1,5 +1,5 @@
 const { query } = require('../config/db');
-const { serializeFile, serializeKnowledgePoint, stringifyTags, toId, placeholders, firstPresent, clampPageSize } = require('../utils/mysqlUtils');
+const { serializeFile, serializeKnowledgePoint, stringifyTags, toId, placeholders, firstPresent, parsePageAndLimit } = require('../utils/mysqlUtils');
 const { sendServerError } = require('../utils/serverError');
 const {
   buildCompanyFilter,
@@ -133,11 +133,10 @@ exports.getKnowledgePoints = async (req, res) => {
       departmentId,
       professionId,
       search,
-      page = 1,
-      limit = 20,
       sortBy = 'created_at',
       sortOrder = 'desc',
     } = req.query;
+    const { page, limit } = parsePageAndLimit(req.query, 20, 100);
 
     const filters = [`kp.status = 'active'`];
     const params = [];
@@ -178,7 +177,7 @@ exports.getKnowledgePoints = async (req, res) => {
     const sortColumn = sortable[sortBy] || 'kp.created_at';
     const direction = sortOrder === 'asc' ? 'ASC' : 'DESC';
     const where = `WHERE ${filters.join(' AND ')}`;
-    const pageSize = clampPageSize(limit);
+    const offset = (page - 1) * limit;
     const countRows = await query(`SELECT COUNT(*) AS total FROM knowledge_points kp ${where}`, params);
     const total = countRows[0].total;
 
@@ -187,14 +186,14 @@ exports.getKnowledgePoints = async (req, res) => {
        ${where}
        ORDER BY ${sortColumn} ${direction}
        LIMIT ? OFFSET ?`,
-      [...params, pageSize, (Number(page) - 1) * pageSize]
+      [...params, limit, offset]
     );
 
     res.json({
       knowledgePoints: await serializeKnowledgePointsForUser(req.user, rows),
       pagination: {
-        current: Number(page),
-        pages: Math.ceil(total / pageSize),
+        current: page,
+        pages: Math.ceil(total / limit),
         total,
       },
     });

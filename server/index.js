@@ -3,6 +3,7 @@ const { connectDB, getDatabaseStatus, pool, requireDatabase } = require('./confi
 const cors = require('cors');
 const helmet = require('helmet');
 const compression = require('compression');
+const { sanitize } = require('./utils/sanitizeLog');
 require('dotenv').config();
 
 const app = express();
@@ -95,7 +96,12 @@ app.use((err, req, res, next) => {
   if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
     return res.status(400).json({ message: '请求体 JSON 格式不正确' });
   }
-  console.error(`未处理的服务器错误 [${req.method} ${req.originalUrl}]:`, err);
+  const requestContext = {
+    method: req.method,
+    url: req.originalUrl,
+    body: req.body && Object.keys(req.body).length ? sanitize(req.body) : undefined,
+  };
+  console.error(`未处理的服务器错误 [${req.method} ${req.originalUrl}]:`, err, requestContext);
   return res.status(err.status || 500).json({ message: '服务器内部错误' });
 });
 
