@@ -211,6 +211,9 @@ const createDepartment = async (req, res) => {
     if (!name) {
       return res.status(400).json({ message: '请输入部门名称' });
     }
+    if (managers !== undefined && !Array.isArray(managers)) {
+      return res.status(400).json({ message: '负责人列表必须是数组', field: 'managers' });
+    }
 
     if (!DIRECTORY_TYPES.has(type)) {
       return res.status(400).json({ message: '目录类型只能是专业目录或科室目录' });
@@ -264,6 +267,9 @@ const updateDepartment = async (req, res) => {
   try {
     const id = toId(req.params.id);
     const { name, description = '', managers, order, isActive } = req.body;
+    if (managers !== undefined && !Array.isArray(managers)) {
+      return res.status(400).json({ message: '负责人列表必须是数组', field: 'managers' });
+    }
     const companyId = getScopedCompanyId(req.user, req.body.companyId || req.query.companyId);
 
     const existing = await query(

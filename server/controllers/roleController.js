@@ -53,6 +53,9 @@ const createRole = async (req, res) => {
     if (!name) {
       return res.status(400).json({ message: '请输入角色名称' });
     }
+    if (permissions !== undefined && !Array.isArray(permissions)) {
+      return res.status(400).json({ message: '权限列表必须是数组', field: 'permissions' });
+    }
 
     const roleId = await withTransaction(async (connection) => {
       const [result] = await connection.execute(
