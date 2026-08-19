@@ -1,6 +1,6 @@
 const crypto = require('crypto');
 const { query, isDuplicateKeyError } = require('../config/db');
-const { serializeCompany, parseTags, toId } = require('../utils/mysqlUtils');
+const { serializeCompany, parseTags, toId, parsePageAndLimit } = require('../utils/mysqlUtils');
 const { isPlatformAdmin } = require('../utils/resourceAccess');
 const { sendServerError } = require('../utils/serverError');
 
@@ -69,14 +69,28 @@ exports.getCompanies = async (req, res) => {
       params.push(`%${req.query.search}%`);
     }
 
+    const { page, limit } = parsePageAndLimit(req.query, 100, 100);
+    const offset = (page - 1) * limit;
+
     const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
-    const rows = await query(`SELECT * FROM companies ${where} ORDER BY created_at DESC`, params);
+    const countRows = await query(`SELECT COUNT(*) AS total FROM companies ${where}`, params);
+    const total = countRows[0].total;
+
+    const rows = await query(
+      `SELECT * FROM companies ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+      [...params, limit, offset]
+    );
     const stats = await loadCompanyStats(rows.map((row) => row.id));
     res.json({
       companies: rows.map((row) => ({
         ...serializeCompany(row),
         ...(stats.get(toId(row.id)) || {}),
       })),
+      pagination: {
+        current: page,
+        pages: Math.ceil(total / limit),
+        total,
+      },
     });
   } catch (err) {
     sendServerError(res, err, '获取公司列表失败');

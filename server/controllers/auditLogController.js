@@ -1,12 +1,6 @@
 const { query } = require('../config/db');
-const { toId } = require('../utils/mysqlUtils');
+const { toId, parsePageAndLimit } = require('../utils/mysqlUtils');
 const { sendServerError } = require('../utils/serverError');
-
-const clampPageSize = (value) => {
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) return 20;
-  return Math.min(parsed, 100);
-};
 
 const parseMetadata = (value) => {
   if (!value) return {};
@@ -49,8 +43,7 @@ const serializeAuditLog = (row) => ({
 
 exports.getAuditLogs = async (req, res) => {
   try {
-    const page = Math.max(Number.parseInt(req.query.page || '1', 10), 1);
-    const limit = clampPageSize(req.query.limit);
+    const { page, limit } = parsePageAndLimit(req.query, 20, 100);
     const {
       action,
       actorId,
