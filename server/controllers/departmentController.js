@@ -1,5 +1,5 @@
 const { query, withTransaction, isDuplicateKeyError } = require('../config/db');
-const { serializeDepartment, serializeUser, toId, placeholders } = require('../utils/mysqlUtils');
+const { serializeDepartment, serializeUser, toId, placeholders, parsePageAndLimit } = require('../utils/mysqlUtils');
 const { getScopedCompanyId, isPlatformAdmin } = require('../utils/resourceAccess');
 const { loadRolesForUsers } = require('./userController');
 const { sendServerError } = require('../utils/serverError');
@@ -93,22 +93,37 @@ const getDepartments = async (req, res) => {
       params.push(toId(req.query.parentDepartment));
     }
 
+    const { page, limit } = parsePageAndLimit(req.query, 1000, 1000);
+    const offset = (page - 1) * limit;
+
+    const where = `WHERE ${filters.join(' AND ')}`;
+    const countRows = await query(`SELECT COUNT(*) AS total FROM departments d ${where}`, params);
+    const total = countRows[0].total;
+
     const rows = await query(
       `${baseDepartmentSelect}
-       WHERE ${filters.join(' AND ')}
-       ORDER BY d.order_index, d.created_at`,
-      params
+       ${where}
+       ORDER BY d.order_index, d.created_at
+       LIMIT ? OFFSET ?`,
+      [...params, limit, offset]
     );
     const managersByDepartment = await loadManagers(rows.map((department) => department.id));
     const statsByDepartment = await loadDepartmentContentStats(rows.map((department) => department.id), 'department_id', companyId);
     const statsByProfession = await loadDepartmentContentStats(rows.map((department) => department.id), 'profession_id', companyId);
 
-    res.json(rows.map((department) => serializeDepartment(department, {
-      managers: managersByDepartment.get(department.id) || [],
-      ...(department.type === 'profession'
-        ? statsByProfession.get(department.id)
-        : statsByDepartment.get(department.id)),
-    })));
+    res.json({
+      departments: rows.map((department) => serializeDepartment(department, {
+        managers: managersByDepartment.get(department.id) || [],
+        ...(department.type === 'profession'
+          ? statsByProfession.get(department.id)
+          : statsByDepartment.get(department.id)),
+      })),
+      pagination: {
+        current: page,
+        pages: Math.ceil(total / limit),
+        total,
+      },
+    });
   } catch (err) {
     sendServerError(res, err, '获取部门列表失败');
   }

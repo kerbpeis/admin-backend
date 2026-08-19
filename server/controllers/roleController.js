@@ -1,5 +1,5 @@
 const { query, withTransaction, isDuplicateKeyError } = require('../config/db');
-const { serializePermission, serializeRole, toId, placeholders, firstPresent } = require('../utils/mysqlUtils');
+const { serializePermission, serializeRole, toId, placeholders, firstPresent, parsePageAndLimit } = require('../utils/mysqlUtils');
 const { sendServerError } = require('../utils/serverError');
 
 const loadPermissionsForRoles = async (roleIds) => {
@@ -25,11 +25,25 @@ const loadPermissionsForRoles = async (roleIds) => {
 
 const getRoles = async (req, res) => {
   try {
-    const roles = await query('SELECT * FROM roles ORDER BY id');
+    const { page, limit } = parsePageAndLimit(req.query, 1000, 1000);
+    const offset = (page - 1) * limit;
+
+    const countRows = await query('SELECT COUNT(*) AS total FROM roles');
+    const total = countRows[0].total;
+
+    const roles = await query(
+      'SELECT * FROM roles ORDER BY id LIMIT ? OFFSET ?',
+      [limit, offset]
+    );
     const permissionsByRole = await loadPermissionsForRoles(roles.map((role) => role.id));
 
     res.json({
       roles: roles.map((role) => serializeRole(role, permissionsByRole.get(role.id) || [])),
+      pagination: {
+        current: page,
+        pages: Math.ceil(total / limit),
+        total,
+      },
     });
   } catch (err) {
     sendServerError(res, err, '获取角色列表失败');
