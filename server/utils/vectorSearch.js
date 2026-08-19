@@ -16,7 +16,7 @@ const parseEmbedding = (value) => {
 // 先按关键词/LIKE召回候选（粗排），再对候选计算问题与 chunk 的 embedding 余弦相似度（精排）。
 // 未配置 embedding 时直接返回原候选。
 const rerankChunksByEmbedding = async (question, candidateChunks) => {
-  if (!isEmbeddingConfigured() || !candidateChunks.length) return candidateChunks;
+  if (!(await isEmbeddingConfigured()) || !candidateChunks.length) return candidateChunks;
 
   try {
     const questionEmbedding = await generateEmbedding(question);

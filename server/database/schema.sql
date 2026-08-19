@@ -519,3 +519,19 @@ CREATE TABLE IF NOT EXISTS quiz_attempts (
   CONSTRAINT fk_quiz_attempts_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
   CONSTRAINT fk_quiz_attempts_question FOREIGN KEY (question_id) REFERENCES quiz_questions (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- 运行时配置：支持通过管理后台动态调整 LLM / Tika / Embedding 等开关与参数
+CREATE TABLE IF NOT EXISTS runtime_settings (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  config_key VARCHAR(100) NOT NULL,
+  config_value JSON NULL,
+  description VARCHAR(255) NULL,
+  updated_by BIGINT UNSIGNED NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_runtime_settings_key (config_key),
+  KEY idx_runtime_settings_updated_by (updated_by),
+  CONSTRAINT fk_runtime_settings_user FOREIGN KEY (updated_by) REFERENCES users (id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

@@ -911,7 +911,7 @@ exports.queryAgent = async (req, res) => {
       resourceType: 'agent_query',
       resourceName: question.slice(0, 80),
       generator: answer.generator,
-      model: answer.generator === 'llm' ? getLlmModel() : null,
+      model: answer.generator === 'llm' ? await getLlmModel() : null,
       promptTokens: llmCore?.usage?.promptTokens ?? null,
       completionTokens: llmCore?.usage?.completionTokens ?? null,
       metadata: {
@@ -949,7 +949,7 @@ exports.queryAgent = async (req, res) => {
       passageCount,
       clauseCount: clauseMatches.length,
       generator: answer.generator,
-      model: answer.generator === 'llm' ? getLlmModel() : null,
+      model: answer.generator === 'llm' ? await getLlmModel() : null,
       llmLimited,
       llmTimedOut,
       directAnswer,
@@ -1004,7 +1004,7 @@ exports.getAgentUsageStats = async (req, res) => {
 
     res.json({
       dailyLimit: getLlmDailyLimit() || null,
-      model: getLlmModel(),
+      model: await getLlmModel(),
       days,
       totals: days.reduce((acc, day) => ({
         queryCount: acc.queryCount + day.queryCount,

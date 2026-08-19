@@ -54,6 +54,7 @@ app.use('/api/partner-state', require('./routes/partnerState'));
 app.use('/api/private-knowledge', require('./routes/privateKnowledge'));
 app.use('/api/agent', require('./routes/agent'));
 app.use('/api/quiz', require('./routes/quiz'));
+app.use('/api/config', require('./routes/config'));
 
 // 健康检查路由
 app.get('/health', (req, res) => {

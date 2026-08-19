@@ -94,7 +94,7 @@ const sanitizeAnswer = (raw, sources) => {
 
 // 调用 LLM 生成回答核心内容；未配置或任何失败均返回 null，由调用方回退模板
 const buildLlmAnswer = async ({ question, intentLabel, sources = [], clauses = [], context, user }) => {
-  if (!isLlmConfigured()) return null;
+  if (!(await isLlmConfigured())) return null;
   try {
     const { content, usage } = await chatJsonCompletion({
       system: SYSTEM_PROMPT,

@@ -1,22 +1,32 @@
 // OpenAI 兼容协议的 Embedding 客户端（DeepSeek / OpenAI / 自建服务均可）。
+// 配置优先读取运行时配置（runtimeConfig），未设置时回退到环境变量。
 // 未配置 EMBEDDING_API_KEY 时视为未启用，调用方应回退到关键词检索。
+
+const { getConfig: getRuntimeConfig } = require('./runtimeConfig');
 
 const DEFAULT_API_BASE = 'https://api.deepseek.com/v1';
 const DEFAULT_MODEL = 'deepseek-embed';
 const DEFAULT_TIMEOUT_MS = 30000;
 const DEFAULT_BATCH_SIZE = 16;
 
-const getConfig = () => ({
-  apiKey: String(process.env.EMBEDDING_API_KEY || process.env.LLM_API_KEY || '').trim(),
-  apiBase: String(process.env.EMBEDDING_API_BASE || process.env.LLM_API_BASE || DEFAULT_API_BASE).trim().replace(/\/+$/, ''),
-  model: String(process.env.EMBEDDING_MODEL || DEFAULT_MODEL).trim(),
-  timeoutMs: Number(process.env.EMBEDDING_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS,
-  batchSize: Number(process.env.EMBEDDING_BATCH_SIZE) || DEFAULT_BATCH_SIZE,
-});
+const getConfig = async () => {
+  const runtime = await getRuntimeConfig();
+  return {
+    apiKey: String(process.env.EMBEDDING_API_KEY || process.env.LLM_API_KEY || '').trim(),
+    apiBase: String(runtime.embeddingApiBase || process.env.EMBEDDING_API_BASE || process.env.LLM_API_BASE || DEFAULT_API_BASE).trim().replace(/\/+$/, ''),
+    model: String(runtime.embeddingModel || process.env.EMBEDDING_MODEL || DEFAULT_MODEL).trim(),
+    timeoutMs: Number(runtime.embeddingTimeoutMs || process.env.EMBEDDING_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS,
+    batchSize: Number(runtime.embeddingBatchSize || process.env.EMBEDDING_BATCH_SIZE) || DEFAULT_BATCH_SIZE,
+    enabled: runtime.embeddingEnabled !== false,
+  };
+};
 
-const isEmbeddingConfigured = () => Boolean(getConfig().apiKey);
+const isEmbeddingConfigured = async () => {
+  const config = await getConfig();
+  return config.enabled && Boolean(config.apiKey);
+};
 
-const getEmbeddingModel = () => (isEmbeddingConfigured() ? getConfig().model : null);
+const getEmbeddingModel = async () => ((await isEmbeddingConfigured()) ? (await getConfig()).model : null);
 
 // 计算两个一维向量的余弦相似度
 const cosineSimilarity = (a, b) => {
@@ -35,7 +45,8 @@ const cosineSimilarity = (a, b) => {
 
 // 调用 Embedding API 批量生成向量
 const fetchEmbeddings = async (texts) => {
-  const config = getConfig();
+  const config = await getConfig();
+  if (!config.enabled) throw new Error('Embedding 已在运行时配置中关闭');
   if (!config.apiKey) throw new Error('未配置 EMBEDDING_API_KEY');
 
   const controller = new AbortController();
@@ -73,7 +84,7 @@ const fetchEmbeddings = async (texts) => {
 
 // 分批生成 embedding，避免单次请求过长
 const generateEmbeddings = async (texts) => {
-  const config = getConfig();
+  const config = await getConfig();
   const batchSize = config.batchSize;
   const results = [];
   for (let i = 0; i < texts.length; i += batchSize) {

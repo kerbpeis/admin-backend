@@ -11,6 +11,7 @@ import {
   TeamOutlined,
   LockOutlined,
   LogoutOutlined,
+  SettingOutlined,
 } from '@ant-design/icons';
 import { BrowserRouter as Router, Routes, Route, Navigate, Link, useLocation, useNavigate } from 'react-router-dom';
 import axios from 'axios';
@@ -24,6 +25,7 @@ import DirectoryManagement from './pages/DirectoryManagement';
 import ContentManagement from './pages/ContentManagement';
 import ShareReviewManagement from './pages/ShareReviewManagement';
 import CompanyManagement from './pages/CompanyManagement';
+import ConfigManagement from './pages/ConfigManagement';
 import { PERMISSIONS, hasAnyPermission, hasPermission } from './utils/permissions';
 
 const { Header, Sider, Content } = Layout;
@@ -101,6 +103,14 @@ const navItems = [
     path: '/companies',
     permission: PERMISSIONS.USER_READ,
     platformOnly: true,
+    group: 'system'
+  },
+  {
+    key: '/config',
+    icon: <SettingOutlined />,
+    label: '系统配置',
+    path: '/config',
+    permission: PERMISSIONS.PERMISSION_UPDATE,
     group: 'system'
   }
 ];
@@ -350,6 +360,9 @@ function App() {
               
               {/* 审计日志页面 */}
               <Route path="/audit-logs" element={<ProtectedPage currentUser={currentUser} requiredPermission={PERMISSIONS.AUDIT_READ} layoutProps={layoutProps}><AuditLogManagement currentUser={currentUser} /></ProtectedPage>} />
+
+              {/* 系统配置页面 */}
+              <Route path="/config" element={<ProtectedPage currentUser={currentUser} requiredPermission={PERMISSIONS.PERMISSION_UPDATE} layoutProps={layoutProps}><ConfigManagement currentUser={currentUser} /></ProtectedPage>} />
               
               {/* 无权限页面 */}
               <Route path="/forbidden" element={currentUser ? <AppLayout {...layoutProps}><AccessDenied /></AppLayout> : <Navigate to="/login" replace />} />

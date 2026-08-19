@@ -1,27 +1,32 @@
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { getConfig: getRuntimeConfig } = require('./runtimeConfig');
 
 const DEFAULT_TIKA_PORT = 9998;
 const DEFAULT_TIKA_HOST = '127.0.0.1';
 const TIKA_START_TIMEOUT_MS = 30000;
 
-const getConfig = () => ({
-  host: String(process.env.TIKA_HOST || DEFAULT_TIKA_HOST).trim(),
-  port: Number(process.env.TIKA_PORT) || DEFAULT_TIKA_PORT,
-  jarPath: String(process.env.TIKA_JAR_PATH || path.join(__dirname, '..', 'vendor', 'tika-server-standard-2.9.1.jar')).trim(),
-  enabled: process.env.TIKA_ENABLED !== 'false',
-  autoStart: process.env.TIKA_AUTO_START === 'true',
-});
+const getConfig = async () => {
+  const runtime = await getRuntimeConfig();
+  return {
+    host: String(runtime.tikaHost || process.env.TIKA_HOST || DEFAULT_TIKA_HOST).trim(),
+    port: Number(runtime.tikaPort || process.env.TIKA_PORT) || DEFAULT_TIKA_PORT,
+    jarPath: String(runtime.tikaJarPath || process.env.TIKA_JAR_PATH || path.join(__dirname, '..', 'vendor', 'tika-server-standard-2.9.1.jar')).trim(),
+    enabled: runtime.tikaEnabled !== false,
+    autoStart: runtime.tikaAutoStart === true,
+  };
+};
 
-const tikaUrl = (config = getConfig()) => `http://${config.host}:${config.port}`;
+const tikaUrl = (config) => `http://${config.host}:${config.port}`;
 
 let tikaProcess = null;
 
 // 检测 Tika Server 是否已可访问
-const isRunning = async (config = getConfig()) => {
+const isRunning = async (config = null) => {
+  const cfg = config || await getConfig();
   try {
-    const response = await fetch(`${tikaUrl(config)}/`, { method: 'GET', signal: AbortSignal.timeout(1000) });
+    const response = await fetch(`${tikaUrl(cfg)}/`, { method: 'GET', signal: AbortSignal.timeout(1000) });
     return response.ok;
   } catch {
     return false;
@@ -29,33 +34,34 @@ const isRunning = async (config = getConfig()) => {
 };
 
 // 启动本地 Tika Server
-const start = async (config = getConfig()) => {
-  if (!config.enabled) return false;
-  if (await isRunning(config)) {
-    console.log(`Tika Server already running at ${tikaUrl(config)}`);
+const start = async (config = null) => {
+  const cfg = config || await getConfig();
+  if (!cfg.enabled) return false;
+  if (await isRunning(cfg)) {
+    console.log(`Tika Server already running at ${tikaUrl(cfg)}`);
     return true;
   }
 
-  if (!config.autoStart) {
+  if (!cfg.autoStart) {
     console.warn('Tika Server 未运行且 TIKA_AUTO_START 未开启');
     return false;
   }
 
-  if (!fs.existsSync(config.jarPath)) {
-    console.warn(`Tika Server JAR 不存在: ${config.jarPath}`);
+  if (!fs.existsSync(cfg.jarPath)) {
+    console.warn(`Tika Server JAR 不存在: ${cfg.jarPath}`);
     return false;
   }
 
-  console.log(`正在启动 Tika Server: ${config.jarPath} on port ${config.port}`);
-  tikaProcess = spawn('java', ['-jar', config.jarPath, '-p', String(config.port)], {
+  console.log(`正在启动 Tika Server: ${cfg.jarPath} on port ${cfg.port}`);
+  tikaProcess = spawn('java', ['-jar', cfg.jarPath, '-p', String(cfg.port)], {
     stdio: 'ignore',
     detached: false,
   });
 
   const startTime = Date.now();
   while (Date.now() - startTime < TIKA_START_TIMEOUT_MS) {
-    if (await isRunning(config)) {
-      console.log(`Tika Server 启动成功: ${tikaUrl(config)}`);
+    if (await isRunning(cfg)) {
+      console.log(`Tika Server 启动成功: ${tikaUrl(cfg)}`);
       return true;
     }
     await new Promise((resolve) => setTimeout(resolve, 500));
@@ -75,11 +81,12 @@ const stop = () => {
 };
 
 // 提取文件正文
-const extractText = async (absolutePath, config = getConfig()) => {
-  if (!config.enabled) return null;
-  if (!await isRunning(config)) {
-    if (config.autoStart) {
-      const started = await start(config);
+const extractText = async (absolutePath, config = null) => {
+  const cfg = config || await getConfig();
+  if (!cfg.enabled) return null;
+  if (!await isRunning(cfg)) {
+    if (cfg.autoStart) {
+      const started = await start(cfg);
       if (!started) return null;
     } else {
       return null;
@@ -88,7 +95,7 @@ const extractText = async (absolutePath, config = getConfig()) => {
 
   try {
     const fileBuffer = await fs.promises.readFile(absolutePath);
-    const response = await fetch(`${tikaUrl(config)}/tika`, {
+    const response = await fetch(`${tikaUrl(cfg)}/tika`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/octet-stream',

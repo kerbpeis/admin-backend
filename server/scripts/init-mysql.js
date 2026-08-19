@@ -71,6 +71,8 @@ const runMigrations = async (connection) => {
   await ensureColumn(connection, 'file_content_chunks', 'embedding', 'embedding JSON NULL');
   await ensureIndex(connection, 'file_content_chunks', 'idx_file_content_chunks_file', 'INDEX idx_file_content_chunks_file (file_id)');
 
+  await ensureIndex(connection, 'runtime_settings', 'uk_runtime_settings_key', 'UNIQUE KEY uk_runtime_settings_key (config_key)');
+
   await dropIndexIfExists(connection, 'departments', 'uk_departments_name');
   await dropIndexIfExists(connection, 'departments', 'uk_departments_company_name');
   await ensureIndex(connection, 'departments', 'uk_departments_company_type_name', 'UNIQUE KEY uk_departments_company_type_name (company_id, type, name)');

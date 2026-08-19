@@ -1,21 +1,31 @@
 // OpenAI 兼容协议的 LLM 客户端（DeepSeek / Kimi / 通义 / 自建服务均可）。
-// 配置全部走环境变量，未配置 LLM_API_KEY 时视为未启用，调用方应回退到模板回答。
+// 配置优先读取运行时配置（runtimeConfig），未设置时回退到环境变量。
+// 未配置 LLM_API_KEY 时视为未启用，调用方应回退到模板回答。
+const { getConfig: getRuntimeConfig } = require('./runtimeConfig');
+
 const DEFAULT_API_BASE = 'https://api.deepseek.com/v1';
 const DEFAULT_MODEL = 'deepseek-chat';
 const DEFAULT_TIMEOUT_MS = 20000;
 const DEFAULT_MAX_TOKENS = 1200;
 
-const getConfig = () => ({
-  apiKey: String(process.env.LLM_API_KEY || '').trim(),
-  apiBase: String(process.env.LLM_API_BASE || DEFAULT_API_BASE).trim().replace(/\/+$/, ''),
-  model: String(process.env.LLM_MODEL || DEFAULT_MODEL).trim(),
-  timeoutMs: Number(process.env.LLM_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS,
-  maxTokens: Number(process.env.LLM_MAX_TOKENS) || DEFAULT_MAX_TOKENS,
-});
+const getConfig = async () => {
+  const runtime = await getRuntimeConfig();
+  return {
+    apiKey: String(process.env.LLM_API_KEY || '').trim(),
+    apiBase: String(runtime.llmApiBase || process.env.LLM_API_BASE || DEFAULT_API_BASE).trim().replace(/\/+$/, ''),
+    model: String(runtime.llmModel || process.env.LLM_MODEL || DEFAULT_MODEL).trim(),
+    timeoutMs: Number(runtime.llmTimeoutMs || process.env.LLM_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS,
+    maxTokens: Number(runtime.llmMaxTokens || process.env.LLM_MAX_TOKENS) || DEFAULT_MAX_TOKENS,
+    enabled: runtime.llmEnabled !== false,
+  };
+};
 
-const isLlmConfigured = () => Boolean(getConfig().apiKey);
+const isLlmConfigured = async () => {
+  const config = await getConfig();
+  return config.enabled && Boolean(config.apiKey);
+};
 
-const getLlmModel = () => (isLlmConfigured() ? getConfig().model : null);
+const getLlmModel = async () => ((await isLlmConfigured()) ? (await getConfig()).model : null);
 
 // 剥离可能的 markdown 代码围栏后解析 JSON，解析失败抛错
 const parseJsonContent = (content) => {
@@ -30,7 +40,8 @@ const parseJsonContent = (content) => {
 
 // 请求 chat completions 并返回解析后的 JSON 对象，失败抛出带信息的 Error
 const chatJsonCompletion = async ({ system, user, temperature = 0.2 }) => {
-  const config = getConfig();
+  const config = await getConfig();
+  if (!config.enabled) throw new Error('LLM 已在运行时配置中关闭');
   if (!config.apiKey) throw new Error('未配置 LLM_API_KEY');
 
   const controller = new AbortController();
