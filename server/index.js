@@ -56,12 +56,14 @@ app.use('/api/agent', require('./routes/agent'));
 app.use('/api/quiz', require('./routes/quiz'));
 app.use('/api/config', require('./routes/config'));
 
-// 健康检查路由
+// 健康检查路由：数据库异常时返回 503，便于负载均衡/监控识别
 app.get('/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    message: 'Server is running',
-    database: getDatabaseStatus()
+  const dbStatus = getDatabaseStatus();
+  const healthy = dbStatus === 'connected';
+  res.status(healthy ? 200 : 503).json({
+    status: healthy ? 'ok' : 'degraded',
+    message: healthy ? 'Server is running' : 'Server running, database unavailable',
+    database: dbStatus
   });
 });
 
@@ -79,7 +81,7 @@ app.use((err, req, res, next) => {
   if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
     return res.status(400).json({ message: '请求体 JSON 格式不正确' });
   }
-  console.error('未处理的服务器错误:', err);
+  console.error(`未处理的服务器错误 [${req.method} ${req.originalUrl}]:`, err);
   return res.status(err.status || 500).json({ message: '服务器内部错误' });
 });
 

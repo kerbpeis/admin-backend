@@ -22,7 +22,15 @@ const Login = ({ onLoginSuccess }) => {
         message.success('登录成功');
       }
     } catch (err) {
-      message.error(err.response?.data?.message || '登录失败，请检查用户名和密码');
+      let errorMsg = '登录失败，请检查用户名和密码';
+      if (err.response) {
+        // 服务器有响应：优先显示后端返回的 message，没有则按状态码提示
+        errorMsg = err.response.data?.message || (err.response.status >= 500 ? '服务器内部错误，请稍后重试' : '登录失败，请检查用户名和密码');
+      } else if (err.request) {
+        // 请求已发出但没有收到响应：通常是服务器未启动或网络异常
+        errorMsg = '无法连接服务器，请确认后端服务已启动';
+      }
+      message.error(errorMsg);
       console.error('Login error:', err);
     } finally {
       setLoading(false);
