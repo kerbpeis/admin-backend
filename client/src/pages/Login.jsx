@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Form, Input, Button, Card, message } from 'antd';
+import { Form, Input, Button, message } from 'antd';
 import { UserOutlined, LockOutlined } from '@ant-design/icons';
 import axios from 'axios';
 import '../assets/css/Login.css';
@@ -31,55 +31,66 @@ const Login = ({ onLoginSuccess }) => {
 
   return (
     <div className="login-container">
-      <Card title="后台管理系统登录" className="login-card">
-        <Form
-          name="login-form"
-          onFinish={handleLogin}
-          layout="vertical"
-        >
-          <Form.Item
-            name="email"
-            label="邮箱"
-            rules={[
-              { required: true, message: '请输入邮箱' },
-              { type: 'email', message: '请输入有效的邮箱地址' }
-            ]}
+      <div className="login-brand">
+        <div className="login-brand-mark">库</div>
+        <h1 className="login-brand-title">知识库管理后台</h1>
+        <p className="login-brand-subtitle">企业资料的统一检索、共享与治理</p>
+      </div>
+
+      <div className="login-panel">
+        <div className="login-card">
+          <h2 className="login-panel-title">登录</h2>
+          <p className="login-panel-hint">使用企业邮箱登录管理后台</p>
+          <Form
+            name="login-form"
+            onFinish={handleLogin}
+            layout="vertical"
+            size="large"
           >
-            <Input
-              prefix={<UserOutlined className="site-form-item-icon" />}
-              placeholder="邮箱"
-              autoComplete="off"
-            />
-          </Form.Item>
-          
-          <Form.Item
-            name="password"
-            label="密码"
-            rules={[
-              { required: true, message: '请输入密码' },
-              { min: 6, message: '密码长度不能少于6个字符' }
-            ]}
-          >
-            <Input.Password
-              prefix={<LockOutlined className="site-form-item-icon" />}
-              placeholder="密码"
-              autoComplete="off"
-            />
-          </Form.Item>
-          
-          <Form.Item>
-            <Button
-              type="primary"
-              htmlType="submit"
-              className="login-button"
-              loading={loading}
-              block
+            <Form.Item
+              name="email"
+              label="邮箱"
+              rules={[
+                { required: true, message: '请输入邮箱' },
+                { type: 'email', message: '请输入有效的邮箱地址' }
+              ]}
             >
-              登录
-            </Button>
-          </Form.Item>
-        </Form>
-      </Card>
+              <Input
+                prefix={<UserOutlined className="site-form-item-icon" />}
+                placeholder="邮箱"
+                autoComplete="off"
+              />
+            </Form.Item>
+            
+            <Form.Item
+              name="password"
+              label="密码"
+              rules={[
+                { required: true, message: '请输入密码' },
+                { min: 6, message: '密码长度不能少于6个字符' }
+              ]}
+            >
+              <Input.Password
+                prefix={<LockOutlined className="site-form-item-icon" />}
+                placeholder="密码"
+                autoComplete="off"
+              />
+            </Form.Item>
+            
+            <Form.Item style={{ marginBottom: 0 }}>
+              <Button
+                type="primary"
+                htmlType="submit"
+                className="login-button"
+                loading={loading}
+                block
+              >
+                登录
+              </Button>
+            </Form.Item>
+          </Form>
+        </div>
+      </div>
     </div>
   );
 };

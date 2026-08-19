@@ -3,8 +3,9 @@ const path = require('path');
 const { query, withTransaction } = require('../config/db');
 const { PERMISSIONS, hasPermission } = require('../utils/authorization');
 const { recordAuditLog } = require('../utils/auditLog');
-const { resolveDepartmentIds } = require('../utils/resourceAccess');
+const { getScopedCompanyId, getUserCompanyId, resolveDepartmentIds } = require('../utils/resourceAccess');
 const { stringifyTags } = require('../utils/mysqlUtils');
+const { sendServerError } = require('../utils/serverError');
 
 const MAX_WORKSPACE_BYTES = 5 * 1024 * 1024;
 const MAX_BOOKMARKS = 100;
@@ -166,15 +167,15 @@ const buildPromotedDocumentContent = (shareRequest, reviewer) => {
   return sections.filter(Boolean).join('\n\n');
 };
 
-const resolveShareTargetIds = async (shareRequest) => {
+const resolveShareTargetIds = async (shareRequest, companyId) => {
   const payload = parseJson(shareRequest.payload, {});
   const target = payload.target || {};
   const sectionName = shareRequest.target_section || target.section;
   const professionName = shareRequest.target_profession || target.profession;
-  const sectionIds = sectionName ? await resolveDepartmentIds(sectionName) : [];
-  let professionIds = professionName ? await resolveDepartmentIds(professionName, 'profession') : [];
+  const sectionIds = sectionName ? await resolveDepartmentIds(sectionName, null, companyId) : [];
+  let professionIds = professionName ? await resolveDepartmentIds(professionName, 'profession', companyId) : [];
   if (!professionIds.length && professionName) {
-    professionIds = await resolveDepartmentIds(professionName);
+    professionIds = await resolveDepartmentIds(professionName, null, companyId);
   }
 
   return {
@@ -218,7 +219,9 @@ const promoteShareRequestToLibraryDocument = async (connection, req, shareReques
     const item = payload.item || {};
     const target = payload.target || {};
     const targetCategory = limitString(shareRequest.target_category || target.category || item.category || '个人共享', 100, '个人共享');
-    const targetIds = await resolveShareTargetIds(shareRequest);
+    const requesterRows = await connection.execute('SELECT company_id FROM users WHERE id = ? LIMIT 1', [shareRequest.user_id]);
+    const companyId = getScopedCompanyId(req.user, requesterRows[0][0]?.company_id);
+    const targetIds = await resolveShareTargetIds(shareRequest, companyId);
     const tags = uniqueStrings([
       ...toArray(item.tags),
       targetCategory,
@@ -238,10 +241,11 @@ const promoteShareRequestToLibraryDocument = async (connection, req, shareReques
 
     const [fileResult] = await connection.execute(
       `INSERT INTO files
-       (name, original_name, path, size, mime_type, extension, description, category, department_id, profession_id,
+       (company_id, name, original_name, path, size, mime_type, extension, description, category, department_id, profession_id,
         uploaded_by, current_version, version_label, visibility, tags, issuer, approver, icon, color)
-       VALUES (?, ?, ?, ?, 'text/markdown', 'md', ?, ?, ?, ?, ?, 1, 'V1', ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, 'text/markdown', 'md', ?, ?, ?, ?, ?, 1, 'V1', ?, ?, ?, ?, ?, ?)`,
       [
+        companyId,
         shareRequest.title,
         writtenFile.originalName,
         writtenFile.filePath,
@@ -667,9 +671,14 @@ const readPrivateShareRequests = async (user, options = {}) => {
   const canReview = canReviewShareRequests(user);
   const reviewScope = options.scope === 'review' && canReview;
   const limit = Math.min(Math.max(Number(options.limit) || 50, 1), 100);
+  const companyId = getScopedCompanyId(user, options.companyId);
 
   const where = reviewScope ? ['1 = 1'] : ['psr.user_id = ?'];
   const params = reviewScope ? [] : [user.id];
+  if (reviewScope && companyId) {
+    where.push('requester.company_id = ?');
+    params.push(companyId);
+  }
   if (status) {
     where.push('psr.status = ?');
     params.push(status);
@@ -893,8 +902,7 @@ exports.getPrivateWorkspace = async (req, res) => {
       || workspace.readingHistory.length > 0;
     res.json({ exists, workspace });
   } catch (err) {
-    console.error('读取个人知识空间失败:', err);
-    res.status(500).json({ message: '读取个人知识空间失败', error: err.message });
+    sendServerError(res, err, '读取个人知识空间失败');
   }
 };
 
@@ -927,8 +935,7 @@ exports.getReadingHistory = async (req, res) => {
     const workspace = await readPrivateWorkspace(req.user.id);
     res.json({ readingHistory: workspace.readingHistory });
   } catch (err) {
-    console.error('读取最近阅读失败:', err);
-    res.status(500).json({ message: '读取最近阅读失败', error: err.message });
+    sendServerError(res, err, '读取最近阅读失败');
   }
 };
 
@@ -956,8 +963,7 @@ exports.getLearningProgress = async (req, res) => {
     });
     res.json({ progress });
   } catch (err) {
-    console.error('读取学习进度失败:', err);
-    res.status(500).json({ message: '读取学习进度失败', error: err.message });
+    sendServerError(res, err, '读取学习进度失败');
   }
 };
 
@@ -968,8 +974,7 @@ exports.getDownloadHistory = async (req, res) => {
     });
     res.json({ downloads });
   } catch (err) {
-    console.error('读取下载历史失败:', err);
-    res.status(500).json({ message: '读取下载历史失败', error: err.message });
+    sendServerError(res, err, '读取下载历史失败');
   }
 };
 
@@ -980,8 +985,7 @@ exports.getActivityHistory = async (req, res) => {
     });
     res.json({ activities });
   } catch (err) {
-    console.error('读取最近活动失败:', err);
-    res.status(500).json({ message: '读取最近活动失败', error: err.message });
+    sendServerError(res, err, '读取最近活动失败');
   }
 };
 
@@ -1048,8 +1052,7 @@ exports.deletePrivateWorkspace = async (req, res) => {
     });
     res.json({ message: '个人知识空间已清空', exists: false });
   } catch (err) {
-    console.error('清空个人知识空间失败:', err);
-    res.status(500).json({ message: '清空个人知识空间失败', error: err.message });
+    sendServerError(res, err, '清空个人知识空间失败');
   }
 };
 
@@ -1059,11 +1062,11 @@ exports.getShareRequests = async (req, res) => {
       status: req.query.status,
       scope: req.query.scope,
       limit: req.query.limit,
+      companyId: req.query.companyId,
     });
     res.json({ canReview: canReviewShareRequests(req.user), shareRequests });
   } catch (err) {
-    console.error('读取共享申请失败:', err);
-    res.status(500).json({ message: '读取共享申请失败', error: err.message });
+    sendServerError(res, err, '读取共享申请失败');
   }
 };
 
@@ -1190,6 +1193,8 @@ exports.updateShareRequest = async (req, res) => {
 
     const isOwner = String(existing.user_id) === String(req.user.id);
     const canReview = req.user.isAdmin || hasPermission(req.user, PERMISSIONS.FILE_CREATE) || hasPermission(req.user, PERMISSIONS.FILE_UPDATE);
+    const requesterRows = await query('SELECT company_id FROM users WHERE id = ? LIMIT 1', [existing.user_id]);
+    const requesterCompanyId = requesterRows[0]?.company_id;
 
     if (status === 'cancelled') {
       if (!isOwner) return res.status(403).json({ message: '只能取消自己的共享申请' });
@@ -1202,6 +1207,11 @@ exports.updateShareRequest = async (req, res) => {
       );
     } else {
       if (!canReview) return res.status(403).json({ message: '没有审核共享申请的权限' });
+      if (isOwner) return res.status(403).json({ message: '不能审核自己提交的共享申请' });
+      const scopedCompanyId = getScopedCompanyId(req.user, req.body?.companyId || req.query.companyId);
+      if (scopedCompanyId && requesterCompanyId && String(scopedCompanyId) !== String(requesterCompanyId)) {
+        return res.status(403).json({ message: '不能审核其他公司的共享申请' });
+      }
       if (!['approved', 'rejected', 'pending'].includes(status)) {
         return res.status(400).json({ message: '审核状态不正确' });
       }
@@ -1255,8 +1265,7 @@ exports.updateShareRequest = async (req, res) => {
     if (promotedFilePath) {
       await fs.unlink(promotedFilePath).catch(() => {});
     }
-    console.error('更新共享申请失败:', err);
-    res.status(500).json({ message: '更新共享申请失败', error: err.message });
+    sendServerError(res, err, '更新共享申请失败');
   }
 };
 
@@ -1267,8 +1276,7 @@ exports.getAgentInteractions = async (req, res) => {
     });
     res.json({ interactions });
   } catch (err) {
-    console.error('读取智能体历史失败:', err);
-    res.status(500).json({ message: '读取智能体历史失败', error: err.message });
+    sendServerError(res, err, '读取智能体历史失败');
   }
 };
 
@@ -1338,7 +1346,6 @@ exports.deleteAgentInteractions = async (req, res) => {
     await query('DELETE FROM agent_interactions WHERE user_id = ?', [req.user.id]);
     return res.json({ message: '智能体历史已清空' });
   } catch (err) {
-    console.error('删除智能体历史失败:', err);
-    res.status(500).json({ message: '删除智能体历史失败', error: err.message });
+    sendServerError(res, err, '删除智能体历史失败');
   }
 };

@@ -1,11 +1,16 @@
 const { query, withTransaction, isDuplicateKeyError } = require('../config/db');
 const { serializeDepartment, serializeUser, toId, placeholders } = require('../utils/mysqlUtils');
+const { getScopedCompanyId, isPlatformAdmin } = require('../utils/resourceAccess');
 const { loadRolesForUsers } = require('./userController');
+const { sendServerError } = require('../utils/serverError');
+
+const DIRECTORY_TYPES = new Set(['profession', 'section']);
 
 const baseDepartmentSelect = `
-  SELECT d.*, p.name AS parent_department_name, p.type AS parent_department_type
+  SELECT d.*, p.name AS parent_department_name, p.type AS parent_department_type, c.name AS company_name
   FROM departments d
   LEFT JOIN departments p ON p.id = d.parent_department_id
+  LEFT JOIN companies c ON c.id = d.company_id
 `;
 
 const loadManagers = async (departmentIds) => {
@@ -30,18 +35,20 @@ const loadManagers = async (departmentIds) => {
   return map;
 };
 
-const loadDepartmentContentStats = async (departmentIds, scopeColumn = 'department_id') => {
+const loadDepartmentContentStats = async (departmentIds, scopeColumn = 'department_id', companyId = null) => {
   const ids = departmentIds.map(toId).filter(Boolean);
   const safeScopeColumn = scopeColumn === 'profession_id' ? 'profession_id' : 'department_id';
   const stats = new Map(ids.map((id) => [id, { knowledgePointCount: 0, fileCount: 0 }]));
   if (!ids.length) return stats;
+  const companyFilter = companyId ? ' AND company_id = ?' : '';
+  const params = companyId ? [...ids, companyId] : ids;
 
   const knowledgeRows = await query(
     `SELECT ${safeScopeColumn} AS department_id, COUNT(*) AS total
      FROM knowledge_points
-     WHERE ${safeScopeColumn} IN (${placeholders(ids)}) AND status = 'active'
+     WHERE ${safeScopeColumn} IN (${placeholders(ids)}) AND status = 'active'${companyFilter}
      GROUP BY ${safeScopeColumn}`,
-    ids
+    params
   );
   for (const row of knowledgeRows) {
     const id = toId(row.department_id);
@@ -51,9 +58,9 @@ const loadDepartmentContentStats = async (departmentIds, scopeColumn = 'departme
   const fileRows = await query(
     `SELECT ${safeScopeColumn} AS department_id, COUNT(*) AS total
      FROM files
-     WHERE ${safeScopeColumn} IN (${placeholders(ids)}) AND status = 'active'
+     WHERE ${safeScopeColumn} IN (${placeholders(ids)}) AND status = 'active'${companyFilter}
      GROUP BY ${safeScopeColumn}`,
-    ids
+    params
   );
   for (const row of fileRows) {
     const id = toId(row.department_id);
@@ -67,6 +74,14 @@ const getDepartments = async (req, res) => {
   try {
     const filters = ['d.is_active = 1'];
     const params = [];
+    // 平台管理员传 companyId=all 时查看全部公司的目录（只读总览）
+    const wantsAllCompanies = isPlatformAdmin(req.user) && req.query.companyId === 'all';
+    const companyId = wantsAllCompanies ? null : getScopedCompanyId(req.user, req.query.companyId);
+
+    if (companyId) {
+      filters.push('d.company_id = ?');
+      params.push(companyId);
+    }
 
     if (req.query.type) {
       filters.push('d.type = ?');
@@ -85,8 +100,8 @@ const getDepartments = async (req, res) => {
       params
     );
     const managersByDepartment = await loadManagers(rows.map((department) => department.id));
-    const statsByDepartment = await loadDepartmentContentStats(rows.map((department) => department.id), 'department_id');
-    const statsByProfession = await loadDepartmentContentStats(rows.map((department) => department.id), 'profession_id');
+    const statsByDepartment = await loadDepartmentContentStats(rows.map((department) => department.id), 'department_id', companyId);
+    const statsByProfession = await loadDepartmentContentStats(rows.map((department) => department.id), 'profession_id', companyId);
 
     res.json(rows.map((department) => serializeDepartment(department, {
       managers: managersByDepartment.get(department.id) || [],
@@ -95,26 +110,31 @@ const getDepartments = async (req, res) => {
         : statsByDepartment.get(department.id)),
     })));
   } catch (err) {
-    res.status(500).json({ message: '获取部门列表失败', error: err.message });
+    sendServerError(res, err, '获取部门列表失败');
   }
 };
 
 const getProfessions = async (req, res) => {
   try {
+    const companyId = getScopedCompanyId(req.user, req.query.companyId);
     const professions = await query(
       `${baseDepartmentSelect}
        WHERE d.type = 'profession' AND d.is_active = 1
-       ORDER BY d.order_index`
+       ${companyId ? 'AND d.company_id = ?' : ''}
+       ORDER BY d.order_index`,
+      companyId ? [companyId] : []
     );
 
     const sections = await query(
       `SELECT * FROM departments
        WHERE type = 'section' AND is_active = 1
-       ORDER BY order_index`
+       ${companyId ? 'AND company_id = ?' : ''}
+       ORDER BY order_index`,
+      companyId ? [companyId] : []
     );
 
-    const statsByProfession = await loadDepartmentContentStats(professions.map((profession) => profession.id), 'profession_id');
-    const statsBySection = await loadDepartmentContentStats(sections.map((section) => section.id), 'department_id');
+    const statsByProfession = await loadDepartmentContentStats(professions.map((profession) => profession.id), 'profession_id', companyId);
+    const statsBySection = await loadDepartmentContentStats(sections.map((section) => section.id), 'department_id', companyId);
 
     const result = professions.map((profession) => serializeDepartment(profession, {
       ...(statsByProfession.get(profession.id) || {}),
@@ -128,21 +148,28 @@ const getProfessions = async (req, res) => {
 
     res.json(result);
   } catch (err) {
-    res.status(500).json({ message: '获取专业分类失败', error: err.message });
+    sendServerError(res, err, '获取专业分类失败');
   }
 };
 
 const getDepartment = async (req, res) => {
   try {
     const id = toId(req.params.id);
-    const rows = await query(`${baseDepartmentSelect} WHERE d.id = ?`, [id]);
+    const companyId = getScopedCompanyId(req.user, req.query.companyId);
+    const rows = await query(
+      `${baseDepartmentSelect} WHERE d.id = ? ${companyId ? 'AND d.company_id = ?' : ''}`,
+      companyId ? [id, companyId] : [id]
+    );
     if (!rows[0]) {
       return res.status(404).json({ message: '部门不存在' });
     }
 
     const members = await query(
-      `SELECT * FROM users WHERE department = ? OR section = ? ORDER BY created_at DESC`,
-      [rows[0].name, rows[0].name]
+      `SELECT * FROM users
+       WHERE (department = ? OR section = ?)
+       ${companyId ? 'AND company_id = ?' : ''}
+       ORDER BY created_at DESC`,
+      companyId ? [rows[0].name, rows[0].name, companyId] : [rows[0].name, rows[0].name]
     );
     const rolesByUser = await loadRolesForUsers(members.map((member) => member.id));
     const managersByDepartment = await loadManagers([id]);
@@ -152,14 +179,25 @@ const getDepartment = async (req, res) => {
       members: members.map((member) => serializeUser(member, rolesByUser.get(member.id) || [])),
     }));
   } catch (err) {
-    res.status(500).json({ message: '获取部门详情失败', error: err.message });
+    sendServerError(res, err, '获取部门详情失败');
   }
 };
 
-const saveManagers = async (connection, departmentId, managers = []) => {
+const saveManagers = async (connection, departmentId, managers = [], companyId = null) => {
   await connection.execute('DELETE FROM department_managers WHERE department_id = ?', [departmentId]);
 
-  for (const managerId of managers.map(toId).filter(Boolean)) {
+  const managerIds = Array.from(new Set(managers.map(toId).filter(Boolean)));
+  if (!managerIds.length) return;
+
+  const scopedManagerRows = companyId
+    ? await connection.execute(
+      `SELECT id FROM users WHERE company_id = ? AND id IN (${placeholders(managerIds)})`,
+      [companyId, ...managerIds]
+    )
+    : [managerIds.map((id) => ({ id }))];
+  const scopedManagerIds = new Set(scopedManagerRows[0].map((row) => String(row.id)));
+
+  for (const managerId of managerIds.filter((id) => scopedManagerIds.has(String(id)))) {
     await connection.execute(
       'INSERT IGNORE INTO department_managers (department_id, user_id) VALUES (?, ?)',
       [departmentId, managerId]
@@ -174,13 +212,38 @@ const createDepartment = async (req, res) => {
       return res.status(400).json({ message: '请输入部门名称' });
     }
 
+    if (!DIRECTORY_TYPES.has(type)) {
+      return res.status(400).json({ message: '目录类型只能是专业目录或科室目录' });
+    }
+
+    const departmentCompanyId = getScopedCompanyId(req.user, req.body.companyId);
+    if (!departmentCompanyId) {
+      return res.status(400).json({ message: '请先选择公司' });
+    }
+
+    const parentDepartmentId = type === 'section' ? toId(parentDepartment) : null;
+    if (type === 'section' && !parentDepartmentId) {
+      return res.status(400).json({ message: '请选择所属专业目录' });
+    }
+
+    if (parentDepartmentId) {
+      const parentRows = await query(
+        `SELECT id FROM departments
+         WHERE id = ? AND type = 'profession' AND is_active = 1 AND company_id = ?`,
+        [parentDepartmentId, departmentCompanyId]
+      );
+      if (!parentRows[0]) {
+        return res.status(400).json({ message: '所属专业目录不存在或不属于当前公司' });
+      }
+    }
+
     const departmentId = await withTransaction(async (connection) => {
       const [result] = await connection.execute(
-        `INSERT INTO departments (name, description, type, parent_department_id)
-         VALUES (?, ?, ?, ?)`,
-        [name, description, type, toId(parentDepartment)]
+        `INSERT INTO departments (company_id, name, description, type, parent_department_id)
+         VALUES (?, ?, ?, ?, ?)`,
+        [departmentCompanyId, name, description, type, parentDepartmentId]
       );
-      await saveManagers(connection, result.insertId, managers);
+      await saveManagers(connection, result.insertId, managers, departmentCompanyId);
       return result.insertId;
     });
 
@@ -193,7 +256,7 @@ const createDepartment = async (req, res) => {
     if (isDuplicateKeyError(err)) {
       return res.status(400).json({ message: '部门名称已存在' });
     }
-    res.status(500).json({ message: '部门创建失败', error: err.message });
+    sendServerError(res, err, '部门创建失败');
   }
 };
 
@@ -201,8 +264,12 @@ const updateDepartment = async (req, res) => {
   try {
     const id = toId(req.params.id);
     const { name, description = '', managers, order, isActive } = req.body;
+    const companyId = getScopedCompanyId(req.user, req.body.companyId || req.query.companyId);
 
-    const existing = await query('SELECT * FROM departments WHERE id = ?', [id]);
+    const existing = await query(
+      `SELECT * FROM departments WHERE id = ? ${companyId ? 'AND company_id = ?' : ''}`,
+      companyId ? [id, companyId] : [id]
+    );
     if (!existing[0]) {
       return res.status(404).json({ message: '部门不存在' });
     }
@@ -222,7 +289,7 @@ const updateDepartment = async (req, res) => {
       );
 
       if (Array.isArray(managers)) {
-        await saveManagers(connection, id, managers);
+        await saveManagers(connection, id, managers, companyId);
       }
     });
 
@@ -235,14 +302,18 @@ const updateDepartment = async (req, res) => {
     if (isDuplicateKeyError(err)) {
       return res.status(400).json({ message: '部门名称已存在' });
     }
-    res.status(500).json({ message: '部门更新失败', error: err.message });
+    sendServerError(res, err, '部门更新失败');
   }
 };
 
 const deleteDepartment = async (req, res) => {
   try {
     const id = toId(req.params.id);
-    const rows = await query('SELECT * FROM departments WHERE id = ?', [id]);
+    const companyId = getScopedCompanyId(req.user, req.query.companyId);
+    const rows = await query(
+      `SELECT * FROM departments WHERE id = ? ${companyId ? 'AND company_id = ?' : ''}`,
+      companyId ? [id, companyId] : [id]
+    );
     if (!rows[0]) {
       return res.status(404).json({ message: '部门不存在' });
     }
@@ -252,7 +323,12 @@ const deleteDepartment = async (req, res) => {
       return res.status(400).json({ message: '该部门下存在子部门，请先删除子部门' });
     }
 
-    const members = await query('SELECT COUNT(*) AS total FROM users WHERE department = ? OR section = ?', [rows[0].name, rows[0].name]);
+    const members = await query(
+      `SELECT COUNT(*) AS total FROM users
+       WHERE (department = ? OR section = ?)
+       ${companyId ? 'AND company_id = ?' : ''}`,
+      companyId ? [rows[0].name, rows[0].name, companyId] : [rows[0].name, rows[0].name]
+    );
     if (members[0].total > 0) {
       return res.status(400).json({ message: '该部门下存在成员，请先转移成员' });
     }
@@ -260,27 +336,34 @@ const deleteDepartment = async (req, res) => {
     await query('DELETE FROM departments WHERE id = ?', [id]);
     res.json({ message: '部门删除成功' });
   } catch (err) {
-    res.status(500).json({ message: '部门删除失败', error: err.message });
+    sendServerError(res, err, '部门删除失败');
   }
 };
 
 const getDepartmentMembers = async (req, res) => {
   try {
     const id = toId(req.params.id);
-    const rows = await query('SELECT * FROM departments WHERE id = ?', [id]);
+    const companyId = getScopedCompanyId(req.user, req.query.companyId);
+    const rows = await query(
+      `SELECT * FROM departments WHERE id = ? ${companyId ? 'AND company_id = ?' : ''}`,
+      companyId ? [id, companyId] : [id]
+    );
     if (!rows[0]) {
       return res.status(404).json({ message: '部门不存在' });
     }
 
     const members = await query(
-      'SELECT * FROM users WHERE department = ? OR section = ? ORDER BY created_at DESC',
-      [rows[0].name, rows[0].name]
+      `SELECT * FROM users
+       WHERE (department = ? OR section = ?)
+       ${companyId ? 'AND company_id = ?' : ''}
+       ORDER BY created_at DESC`,
+      companyId ? [rows[0].name, rows[0].name, companyId] : [rows[0].name, rows[0].name]
     );
     const rolesByUser = await loadRolesForUsers(members.map((member) => member.id));
 
     res.json(members.map((member) => serializeUser(member, rolesByUser.get(member.id) || [])));
   } catch (err) {
-    res.status(500).json({ message: '获取部门成员失败', error: err.message });
+    sendServerError(res, err, '获取部门成员失败');
   }
 };
 
@@ -288,6 +371,12 @@ const getSections = async (req, res) => {
   try {
     const params = [];
     const filters = [`d.type = 'section'`, 'd.is_active = 1'];
+    const companyId = getScopedCompanyId(req.user, req.query.companyId);
+
+    if (companyId) {
+      filters.push('d.company_id = ?');
+      params.push(companyId);
+    }
 
     if (req.query.professionId) {
       filters.push('d.parent_department_id = ?');
@@ -305,11 +394,11 @@ const getSections = async (req, res) => {
        ORDER BY d.order_index`,
       params
     );
-    const statsBySection = await loadDepartmentContentStats(rows.map((row) => row.id), 'department_id');
+    const statsBySection = await loadDepartmentContentStats(rows.map((row) => row.id), 'department_id', companyId);
 
     res.json(rows.map((row) => serializeDepartment(row, statsBySection.get(row.id) || {})));
   } catch (err) {
-    res.status(500).json({ message: '获取科室列表失败', error: err.message });
+    sendServerError(res, err, '获取科室列表失败');
   }
 };
 
@@ -317,7 +406,11 @@ const checkPermission = async (req, res) => {
   try {
     const departmentId = toId(req.query.departmentId);
     const action = req.query.action;
-    const rows = await query(`${baseDepartmentSelect} WHERE d.id = ?`, [departmentId]);
+    const companyId = getScopedCompanyId(req.user, req.query.companyId);
+    const rows = await query(
+      `${baseDepartmentSelect} WHERE d.id = ? ${companyId ? 'AND d.company_id = ?' : ''}`,
+      companyId ? [departmentId, companyId] : [departmentId]
+    );
     if (!rows[0]) {
       return res.status(404).json({ message: '部门不存在' });
     }
@@ -341,7 +434,7 @@ const checkPermission = async (req, res) => {
     const manage = sameSection;
     res.json({ hasPermission: manage, reason: manage ? 'same_section' : 'no_permission' });
   } catch (err) {
-    res.status(500).json({ message: '权限检查失败', error: err.message });
+    sendServerError(res, err, '权限检查失败');
   }
 };
 

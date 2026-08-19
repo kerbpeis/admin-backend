@@ -1,19 +1,46 @@
 const express = require('express');
-const { connectDB, getDatabaseStatus } = require('./config/db');
+const { connectDB, getDatabaseStatus, pool } = require('./config/db');
 const cors = require('cors');
+const helmet = require('helmet');
+const compression = require('compression');
 require('dotenv').config();
 
 const app = express();
 
+const isProduction = process.env.NODE_ENV === 'production';
+
+// 生产环境必须显式配置 JWT_SECRET，缺失时拒绝启动
+if (isProduction && !process.env.JWT_SECRET) {
+  throw new Error('生产环境必须配置 JWT_SECRET 环境变量');
+}
+
+// 部署在 Nginx 等反向代理之后时设为 true，req.ip 与限流才能按真实客户端 IP 统计
+if (process.env.TRUST_PROXY === 'true') {
+  app.set('trust proxy', 1);
+}
+
+// 安全响应头与响应压缩
+app.use(helmet());
+app.use(compression());
+
+// CORS 白名单：CORS_ORIGINS 逗号分隔；未配置时开发环境放行全部，生产环境拒绝跨域
+const corsOrigins = (process.env.CORS_ORIGINS || '')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+app.use(cors({
+  origin: corsOrigins.length ? corsOrigins : (isProduction ? false : true),
+}));
+
 // 配置中间件
-app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 // 上传文件必须通过 /api/files/:id/download 鉴权下载，不公开暴露 uploads 目录。
 
 // 配置路由
 app.use('/api/auth', require('./routes/auth'));
+app.use('/api/companies', require('./routes/companies'));
 app.use('/api/users', require('./routes/users'));
 app.use('/api/roles', require('./routes/roles'));
 app.use('/api/permissions', require('./routes/permissions'));
@@ -26,6 +53,7 @@ app.use('/api/favorites', require('./routes/favorites'));
 app.use('/api/partner-state', require('./routes/partnerState'));
 app.use('/api/private-knowledge', require('./routes/privateKnowledge'));
 app.use('/api/agent', require('./routes/agent'));
+app.use('/api/quiz', require('./routes/quiz'));
 
 // 健康检查路由
 app.get('/health', (req, res) => {
@@ -34,6 +62,24 @@ app.get('/health', (req, res) => {
     message: 'Server is running',
     database: getDatabaseStatus()
   });
+});
+
+// 未匹配到的接口统一返回 JSON 404
+app.use((req, res) => {
+  res.status(404).json({ message: '接口不存在' });
+});
+
+// 全局错误处理：JSON 解析失败、请求体超限等返回 JSON 而非默认 HTML 错误页
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+  if (err.type === 'entity.too.large') {
+    return res.status(413).json({ message: '请求体过大' });
+  }
+  if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
+    return res.status(400).json({ message: '请求体 JSON 格式不正确' });
+  }
+  console.error('未处理的服务器错误:', err);
+  return res.status(err.status || 500).json({ message: '服务器内部错误' });
 });
 
 // 启动服务器
@@ -49,6 +95,29 @@ connectDB().then((connected) => {
   console.log('Server will start without MySQL connection...');
 });
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
+// 未捕获的 Promise 异常：记录日志，避免静默失败
+process.on('unhandledRejection', (reason) => {
+  console.error('未处理的 Promise 异常:', reason);
+});
+
+// 优雅关闭：停止接收新连接，等待存量请求完成后关闭数据库连接池
+const shutdown = (signal) => {
+  console.log(`收到 ${signal}，正在优雅关闭...`);
+  server.close(async () => {
+    try {
+      await pool.end();
+    } catch (err) {
+      console.error('关闭数据库连接池失败:', err.message);
+    } finally {
+      process.exit(0);
+    }
+  });
+  // 10 秒兜底，防止存量请求一直不结束
+  setTimeout(() => process.exit(1), 10000).unref();
+};
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));

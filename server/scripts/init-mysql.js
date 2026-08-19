@@ -31,6 +31,19 @@ const ensureIndex = async (connection, tableName, indexName, indexDefinition) =>
   }
 };
 
+const dropIndexIfExists = async (connection, tableName, indexName) => {
+  const [rows] = await connection.query(
+    `SELECT COUNT(*) AS count
+     FROM information_schema.STATISTICS
+     WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND INDEX_NAME = ?`,
+    [database, tableName, indexName]
+  );
+
+  if (Number(rows[0].count) > 0) {
+    await connection.query(`ALTER TABLE \`${tableName}\` DROP INDEX \`${indexName}\``);
+  }
+};
+
 const runMigrations = async (connection) => {
   await ensureColumn(connection, 'files', 'category', 'category VARCHAR(100) NULL');
   await ensureColumn(connection, 'files', 'version_label', "version_label VARCHAR(80) NOT NULL DEFAULT 'V1'");
@@ -47,6 +60,17 @@ const runMigrations = async (connection) => {
 
   await ensureColumn(connection, 'private_share_requests', 'promoted_file_id', 'promoted_file_id BIGINT UNSIGNED NULL');
   await ensureIndex(connection, 'private_share_requests', 'idx_private_share_requests_promoted', 'INDEX idx_private_share_requests_promoted (promoted_file_id)');
+
+  await ensureColumn(connection, 'audit_logs', 'generator', 'generator VARCHAR(40) NULL');
+  await ensureColumn(connection, 'audit_logs', 'model', 'model VARCHAR(100) NULL');
+  await ensureColumn(connection, 'audit_logs', 'prompt_tokens', 'prompt_tokens INT UNSIGNED NULL');
+  await ensureColumn(connection, 'audit_logs', 'completion_tokens', 'completion_tokens INT UNSIGNED NULL');
+  await ensureIndex(connection, 'audit_logs', 'idx_audit_logs_generator', 'INDEX idx_audit_logs_generator (actor_id, action, generator, created_at)');
+  await ensureIndex(connection, 'audit_logs', 'idx_audit_logs_model', 'INDEX idx_audit_logs_model (actor_id, action, model, created_at)');
+
+  await dropIndexIfExists(connection, 'departments', 'uk_departments_name');
+  await dropIndexIfExists(connection, 'departments', 'uk_departments_company_name');
+  await ensureIndex(connection, 'departments', 'uk_departments_company_type_name', 'UNIQUE KEY uk_departments_company_type_name (company_id, type, name)');
 };
 
 const run = async () => {

@@ -1,38 +1,88 @@
 .login-container {
   display: flex;
-  justify-content: center;
-  align-items: center;
   min-height: 100vh;
-  background-color: #f0f2f5;
-  padding: 20px;
+}
+
+/* 左侧品牌区：深松石绿渐变，承载产品名与定位 */
+.login-brand {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 64px;
+  color: #fff;
+  background: linear-gradient(160deg, #0F2E28 0%, #0F6B5C 100%);
+}
+
+.login-brand-mark {
+  width: 56px;
+  height: 56px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.14);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 26px;
+  font-weight: 600;
+  margin-bottom: 24px;
+}
+
+.login-brand-title {
+  font-size: 32px;
+  font-weight: 600;
+  letter-spacing: 2px;
+  margin: 0 0 12px;
+}
+
+.login-brand-subtitle {
+  font-size: 15px;
+  color: rgba(255, 255, 255, 0.72);
+  margin: 0;
+  letter-spacing: 1px;
+}
+
+/* 右侧表单区 */
+.login-panel {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  background: #F5F6F5;
 }
 
 .login-card {
   width: 100%;
-  max-width: 400px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-  border-radius: 8px;
-  padding: 24px;
+  max-width: 380px;
 }
 
-.login-card .ant-card-head {
-  border-bottom: none;
-  padding-bottom: 0;
-}
-
-.login-card .ant-card-head-title {
-  font-size: 20px;
+.login-panel-title {
+  font-size: 22px;
   font-weight: 600;
-  text-align: center;
-  color: #333;
+  color: #1A2E2A;
+  margin: 0 0 4px;
+}
+
+.login-panel-hint {
+  font-size: 13px;
+  color: #667085;
+  margin: 0 0 28px;
 }
 
 .login-button {
-  height: 40px;
-  font-size: 16px;
-  border-radius: 4px;
+  height: 42px;
+  font-size: 15px;
+  font-weight: 500;
 }
 
 .site-form-item-icon {
   color: rgba(0, 0, 0, 0.25);
+}
+
+/* 窄屏隐藏品牌区，只留表单 */
+@media (max-width: 768px) {
+  .login-brand {
+    display: none;
+  }
 }

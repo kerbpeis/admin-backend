@@ -1,11 +1,15 @@
 const { query, withTransaction } = require('../config/db');
-const { serializeFile, stringifyTags, toId, placeholders } = require('../utils/mysqlUtils');
+const { serializeFile, stringifyTags, toId, placeholders, firstPresent, clampPageSize } = require('../utils/mysqlUtils');
 const { indexFileContentSafely } = require('../utils/fileContentIndex');
+const { sendServerError } = require('../utils/serverError');
+const answerCache = require('../utils/agentAnswerCache');
 const {
+  buildCompanyFilter,
   buildVisibilityFilter,
   canReadScopedResource,
   canManageScopedResource,
   ensureWritableVisibility,
+  getScopedCompanyId,
   resolveDepartmentIds,
   resolveWritableTarget,
 } = require('../utils/resourceAccess');
@@ -89,18 +93,23 @@ exports.getFiles = async (req, res) => {
     const filters = [`f.status = 'active'`];
     const params = [];
 
+    const companyFilter = buildCompanyFilter(req.user, 'f', { requestedCompanyId: req.query.companyId });
+    filters.push(companyFilter.sql);
+    params.push(...companyFilter.params);
+
     const visibilityFilter = await buildVisibilityFilter(req.user, 'f', 'uploaded_by');
     filters.push(visibilityFilter.sql);
     params.push(...visibilityFilter.params);
+    const companyId = getScopedCompanyId(req.user, req.query.companyId);
 
     if (department) {
-      const ids = await resolveDepartmentIds(department);
+      const ids = await resolveDepartmentIds(department, null, companyId);
       filters.push(`f.department_id IN (${placeholders(ids.length ? ids : [0])})`);
       params.push(...(ids.length ? ids : [0]));
     }
 
     if (profession) {
-      const ids = await resolveDepartmentIds(profession, 'profession');
+      const ids = await resolveDepartmentIds(profession, 'profession', companyId);
       filters.push(`f.profession_id IN (${placeholders(ids.length ? ids : [0])})`);
       params.push(...(ids.length ? ids : [0]));
     }
@@ -127,6 +136,7 @@ exports.getFiles = async (req, res) => {
     const direction = sortOrder === 'asc' ? 'ASC' : 'DESC';
     const where = `WHERE ${filters.join(' AND ')}`;
 
+    const pageSize = clampPageSize(limit);
     const countRows = await query(`SELECT COUNT(*) AS total FROM files f ${where}`, params);
     const total = countRows[0].total;
     const files = await query(
@@ -134,20 +144,19 @@ exports.getFiles = async (req, res) => {
        ${where}
        ORDER BY ${sortColumn} ${direction}
        LIMIT ? OFFSET ?`,
-      [...params, Number(limit), (Number(page) - 1) * Number(limit)]
+      [...params, pageSize, (Number(page) - 1) * pageSize]
     );
 
     res.json({
       files: await serializeFilesForUser(req.user, files),
       pagination: {
         current: Number(page),
-        pages: Math.ceil(total / Number(limit)),
+        pages: Math.ceil(total / pageSize),
         total,
       },
     });
   } catch (err) {
-    console.error('获取文件列表失败:', err);
-    res.status(500).json({ message: '获取文件列表失败', error: err.message });
+    sendServerError(res, err, '获取文件列表失败');
   }
 };
 
@@ -165,7 +174,7 @@ exports.getFile = async (req, res) => {
     await query('UPDATE files SET view_count = view_count + 1 WHERE id = ?', [file.id]);
     res.json(await serializeFileForUser(req.user, { ...file, view_count: file.view_count + 1 }));
   } catch (err) {
-    res.status(500).json({ message: '获取文件详情失败', error: err.message });
+    sendServerError(res, err, '获取文件详情失败');
   }
 };
 
@@ -179,6 +188,7 @@ exports.uploadFile = async (req, res) => {
       knowledgePointId,
       departmentId,
       professionId,
+      companyId,
       description = '',
       tags,
       visibility = 'department',
@@ -201,6 +211,7 @@ exports.uploadFile = async (req, res) => {
     const target = await resolveWritableTarget(req.user, {
       departmentId: departmentId || knowledgePoint?.department_id,
       professionId: professionId || knowledgePoint?.profession_id,
+      companyId,
     });
     if (!target.ok) {
       return res.status(403).json({ message: target.message });
@@ -209,9 +220,10 @@ exports.uploadFile = async (req, res) => {
     const insertedId = await withTransaction(async (connection) => {
       const [result] = await connection.execute(
         `INSERT INTO files
-         (name, original_name, path, size, mime_type, extension, description, knowledge_point_id, department_id, profession_id, uploaded_by, visibility, tags)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (company_id, name, original_name, path, size, mime_type, extension, description, knowledge_point_id, department_id, profession_id, uploaded_by, visibility, tags)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
+          target.companyId,
           req.file.originalname,
           req.file.originalname,
           req.file.path,
@@ -243,14 +255,14 @@ exports.uploadFile = async (req, res) => {
 
     await indexFileContentSafely(insertedId, req.file.path, req.file.originalname.split('.').pop().toLowerCase());
 
+    answerCache.flushCompany(target.companyId);
     const file = await getFileRow(insertedId);
     res.status(201).json({
       message: '文件上传成功',
       file: await serializeFileForUser(req.user, file),
     });
   } catch (err) {
-    console.error('文件上传失败:', err);
-    res.status(500).json({ message: '文件上传失败', error: err.message });
+    sendServerError(res, err, '文件上传失败');
   }
 };
 
@@ -266,7 +278,9 @@ exports.updateFile = async (req, res) => {
       return res.status(403).json({ message: '没有权限编辑此文件' });
     }
 
-    const { name, description = '', tags, visibility } = req.body;
+    const { name, tags, visibility } = req.body;
+    // 未传 description 时保持原值，避免被默认空串清空
+    const description = firstPresent(req.body, ['description'], file.description);
     const visibilityCheck = ensureWritableVisibility(req.user, visibility || file.visibility);
     if (!visibilityCheck.ok) {
       return res.status(403).json({ message: visibilityCheck.message });
@@ -279,12 +293,13 @@ exports.updateFile = async (req, res) => {
       [name || file.name, description, stringifyTags(tags) ?? file.tags, visibilityCheck.visibility, id]
     );
 
+    answerCache.flushCompany(getScopedCompanyId(req.user, req.query.companyId));
     res.json({
       message: '文件更新成功',
       file: await serializeFileForUser(req.user, await getFileRow(id)),
     });
   } catch (err) {
-    res.status(500).json({ message: '更新文件失败', error: err.message });
+    sendServerError(res, err, '更新文件失败');
   }
 };
 
@@ -307,9 +322,10 @@ exports.deleteFile = async (req, res) => {
       }
     });
 
+    answerCache.flushCompany(getScopedCompanyId(req.user, req.query.companyId));
     res.json({ message: '文件删除成功' });
   } catch (err) {
-    res.status(500).json({ message: '删除文件失败', error: err.message });
+    sendServerError(res, err, '删除文件失败');
   }
 };
 
@@ -337,7 +353,7 @@ exports.downloadFile = async (req, res) => {
       },
     });
   } catch (err) {
-    res.status(500).json({ message: '下载文件失败', error: err.message });
+    sendServerError(res, err, '下载文件失败');
   }
 };
 
@@ -355,7 +371,7 @@ exports.downloadFileContent = async (req, res) => {
     await query('UPDATE files SET download_count = download_count + 1 WHERE id = ?', [file.id]);
     return res.download(file.path, file.original_name);
   } catch (err) {
-    res.status(500).json({ message: '下载文件内容失败', error: err.message });
+    sendServerError(res, err, '下载文件内容失败');
   }
 };
 
@@ -385,7 +401,6 @@ exports.getFileVersions = async (req, res) => {
       file: String(version.file_id),
       version: version.version_label || `V${version.version}`,
       versionNumber: version.version,
-      path: version.path,
       size: Number(version.size || 0),
       sourceFile: {
         name: version.original_name || file.original_name,
@@ -403,7 +418,7 @@ exports.getFileVersions = async (req, res) => {
       createdAt: version.created_at,
     })));
   } catch (err) {
-    res.status(500).json({ message: '获取文件版本失败', error: err.message });
+    sendServerError(res, err, '获取文件版本失败');
   }
 };
 
@@ -461,6 +476,7 @@ exports.uploadNewVersion = async (req, res) => {
       return result.insertId;
     });
 
+    answerCache.flushCompany(getScopedCompanyId(req.user, req.body.companyId));
     const versions = await query('SELECT * FROM file_versions WHERE id = ?', [versionId]);
     res.json({
       message: '新版本上传成功',
@@ -470,14 +486,13 @@ exports.uploadNewVersion = async (req, res) => {
         id: String(versions[0].id),
         version: versions[0].version_label || `V${versions[0].version}`,
         versionNumber: versions[0].version,
-        path: versions[0].path,
         size: Number(versions[0].size || 0),
         changeLog: versions[0].change_log || '',
         createdAt: versions[0].created_at,
       },
     });
   } catch (err) {
-    res.status(500).json({ message: '上传新版本失败', error: err.message });
+    sendServerError(res, err, '上传新版本失败');
   }
 };
 
@@ -507,6 +522,6 @@ exports.toggleFavorite = async (req, res) => {
       isFavorited: !isFavorited,
     });
   } catch (err) {
-    res.status(500).json({ message: '收藏操作失败', error: err.message });
+    sendServerError(res, err, '收藏操作失败');
   }
 };

@@ -1,16 +1,20 @@
 const path = require('path');
 const { query, withTransaction } = require('../config/db');
-const { stringifyTags, toId, placeholders } = require('../utils/mysqlUtils');
+const { stringifyTags, toId, placeholders, firstPresent, clampPageSize } = require('../utils/mysqlUtils');
 const { PERMISSIONS, hasPermission } = require('../utils/authorization');
 const { recordLibraryDocumentAudit } = require('../utils/auditLog');
 const { indexFileContentSafely } = require('../utils/fileContentIndex');
+const answerCache = require('../utils/agentAnswerCache');
+const { sendServerError } = require('../utils/serverError');
 const {
+  buildCompanyFilter,
   buildVisibilityFilter,
   canReadScopedResource,
   canManageScopedResource,
   ensureWritableVisibility,
   resolveDepartmentIds,
   resolveWritableTarget,
+  getScopedCompanyId,
 } = require('../utils/resourceAccess');
 
 const baseDocumentSelect = `
@@ -62,12 +66,6 @@ const fileTypeGroups = {
 
 const knownFileExtensions = Object.values(fileTypeGroups).flat();
 
-const clampPageSize = (value) => {
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) return 20;
-  return Math.min(parsed, 100);
-};
-
 const formatDate = (value) => {
   if (!value) return null;
   const date = value instanceof Date ? value : new Date(value);
@@ -112,15 +110,6 @@ const parseJsonObject = (value) => {
   }
 };
 
-const firstPresent = (source, keys, fallback = null) => {
-  for (const key of keys) {
-    if (Object.prototype.hasOwnProperty.call(source, key) && source[key] !== undefined) {
-      return source[key];
-    }
-  }
-  return fallback;
-};
-
 const trimText = (value, fallback = '') => String(value ?? fallback).trim();
 
 const firstFilled = (source, keys, fallback = null) => {
@@ -150,12 +139,15 @@ const resolveWritableTargetFromBody = async (user, body, fallback = {}) => {
     ['professionId', 'profession'],
     fallback.professionId
   );
-  const sectionIds = sectionValue ? await resolveDepartmentIds(sectionValue) : [];
-  const professionIds = professionValue ? await resolveDepartmentIds(professionValue, 'profession') : [];
+  const requestedCompanyId = firstFilled(body, ['companyId'], fallback.companyId);
+  const companyId = getScopedCompanyId(user, requestedCompanyId);
+  const sectionIds = sectionValue ? await resolveDepartmentIds(sectionValue, null, companyId) : [];
+  const professionIds = professionValue ? await resolveDepartmentIds(professionValue, 'profession', companyId) : [];
 
   return resolveWritableTarget(user, {
     departmentId: sectionIds[0] || toId(sectionValue) || null,
     professionId: professionIds[0] || toId(professionValue) || null,
+    companyId,
   });
 };
 
@@ -329,20 +321,25 @@ const buildDocumentFilters = async (req) => {
   const filters = [`f.status = 'active'`];
   const params = [];
 
+  const companyFilter = buildCompanyFilter(req.user, 'f', { requestedCompanyId: req.query.companyId });
+  filters.push(companyFilter.sql);
+  params.push(...companyFilter.params);
+
   const visibilityFilter = await buildVisibilityFilter(req.user, 'f', 'uploaded_by');
   filters.push(visibilityFilter.sql);
   params.push(...visibilityFilter.params);
+  const companyId = getScopedCompanyId(req.user, req.query.companyId);
 
   const sectionValue = [sectionId, section, departmentId, department].find((value) => value && value !== 'all');
   if (sectionValue) {
-    const ids = await resolveDepartmentIds(sectionValue);
+    const ids = await resolveDepartmentIds(sectionValue, null, companyId);
     filters.push(`f.department_id IN (${placeholders(ids.length ? ids : [0])})`);
     params.push(...(ids.length ? ids : [0]));
   }
 
   const professionValue = [professionId, profession].find((value) => value && value !== 'all');
   if (professionValue) {
-    const ids = await resolveDepartmentIds(professionValue, 'profession');
+    const ids = await resolveDepartmentIds(professionValue, 'profession', companyId);
     filters.push(`f.profession_id IN (${placeholders(ids.length ? ids : [0])})`);
     params.push(...(ids.length ? ids : [0]));
   }
@@ -488,8 +485,7 @@ exports.getLibraryDocuments = async (req, res) => {
       },
     });
   } catch (err) {
-    console.error('获取资料清单失败:', err);
-    res.status(500).json({ message: '获取资料清单失败', error: err.message });
+    sendServerError(res, err, '获取资料清单失败');
   }
 };
 
@@ -631,8 +627,7 @@ exports.getLibraryDocumentStats = async (req, res) => {
       capabilities: buildLibraryCapabilities(req.user),
     });
   } catch (err) {
-    console.error('获取资料库统计失败:', err);
-    res.status(500).json({ message: '获取资料库统计失败', error: err.message });
+    sendServerError(res, err, '获取资料库统计失败');
   }
 };
 
@@ -663,7 +658,7 @@ exports.getLibraryDocument = async (req, res) => {
       { versionHistory: versions.map((version) => serializeVersion(version, document)) }
     ));
   } catch (err) {
-    res.status(500).json({ message: '获取资料详情失败', error: err.message });
+    sendServerError(res, err, '获取资料详情失败');
   }
 };
 
@@ -706,10 +701,11 @@ exports.createLibraryDocument = async (req, res) => {
     const insertedId = await withTransaction(async (connection) => {
       const [result] = await connection.execute(
         `INSERT INTO files
-         (name, original_name, path, size, mime_type, extension, description, category, department_id, profession_id,
+         (company_id, name, original_name, path, size, mime_type, extension, description, category, department_id, profession_id,
           uploaded_by, current_version, version_label, visibility, tags, effective_date, review_date, issuer, approver, icon, color)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
+          target.companyId,
           title,
           req.file.originalname,
           req.file.path,
@@ -759,9 +755,9 @@ exports.createLibraryDocument = async (req, res) => {
       message: '资料创建成功',
       document: serializeDocument(createdDocument, req.user),
     });
+    answerCache.flushCompany(req.user.companyId);
   } catch (err) {
-    console.error('创建资料失败:', err);
-    res.status(500).json({ message: '创建资料失败', error: err.message });
+    sendServerError(res, err, '创建资料失败');
   }
 };
 
@@ -852,7 +848,7 @@ exports.updateLibraryDocument = async (req, res) => {
       document: serializeDocument(updatedDocument, req.user),
     });
   } catch (err) {
-    res.status(500).json({ message: '更新资料失败', error: err.message });
+    sendServerError(res, err, '更新资料失败');
   }
 };
 
@@ -875,8 +871,9 @@ exports.deleteLibraryDocument = async (req, res) => {
     await query(`UPDATE files SET status = 'deleted' WHERE id = ?`, [id]);
     await recordLibraryDocumentAudit(req, 'library_document.delete', document);
     res.json({ message: '资料删除成功' });
+    answerCache.flushCompany(req.user.companyId);
   } catch (err) {
-    res.status(500).json({ message: '删除资料失败', error: err.message });
+    sendServerError(res, err, '删除资料失败');
   }
 };
 
@@ -897,7 +894,7 @@ exports.getLibraryDocumentCapabilities = async (req, res) => {
       capabilities,
     });
   } catch (err) {
-    res.status(500).json({ message: '获取资料权限失败', error: err.message });
+    sendServerError(res, err, '获取资料权限失败');
   }
 };
 
@@ -922,7 +919,7 @@ exports.getLibraryDocumentVersions = async (req, res) => {
     });
     res.json({ versions: versions.map((version) => serializeVersion(version, document)) });
   } catch (err) {
-    res.status(500).json({ message: '获取资料版本失败', error: err.message });
+    sendServerError(res, err, '获取资料版本失败');
   }
 };
 
@@ -993,8 +990,9 @@ exports.uploadLibraryDocumentVersion = async (req, res) => {
       version: serializeVersion(versionRows[0], document),
       document: serializeDocument(updatedDocument, req.user),
     });
+    answerCache.flushCompany(req.user.companyId);
   } catch (err) {
-    res.status(500).json({ message: '上传资料新版本失败', error: err.message });
+    sendServerError(res, err, '上传资料新版本失败');
   }
 };
 
@@ -1028,7 +1026,7 @@ exports.getLibraryDocumentDownload = async (req, res) => {
       },
     });
   } catch (err) {
-    res.status(500).json({ message: '生成资料下载地址失败', error: err.message });
+    sendServerError(res, err, '生成资料下载地址失败');
   }
 };
 
@@ -1056,6 +1054,6 @@ exports.downloadLibraryDocumentContent = async (req, res) => {
     });
     return res.download(document.path, document.original_name);
   } catch (err) {
-    res.status(500).json({ message: '下载资料失败', error: err.message });
+    sendServerError(res, err, '下载资料失败');
   }
 };

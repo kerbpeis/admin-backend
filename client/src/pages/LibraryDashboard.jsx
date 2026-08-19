@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
-  Alert,
   Button,
   Card,
   Col,
@@ -15,15 +14,13 @@ import {
   message,
 } from 'antd';
 import {
-  DashboardOutlined,
   DownloadOutlined,
   EyeOutlined,
-  FileDoneOutlined,
-  FileTextOutlined,
   ReloadOutlined,
-  SafetyCertificateOutlined,
 } from '@ant-design/icons';
 import axios from 'axios';
+import PageHeader from '../components/PageHeader';
+import tagColor from '../utils/tagColor';
 import dayjs from 'dayjs';
 
 const { Text } = Typography;
@@ -36,7 +33,7 @@ const actionLabels = {
   'library_document.version_list': '查看版本',
   'library_document.version_upload': '发布版本',
   'library_document.download_link': '生成下载',
-  'library_document.download_content': '下载文件',
+  'library_document.download_content': '下载资料',
 };
 
 const formatTime = (value) => (value ? dayjs(value).format('YYYY-MM-DD HH:mm') : '-');
@@ -70,6 +67,25 @@ const DistributionList = ({ title, data = [], metric = 'total' }) => {
       ) : (
         <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无数据" />
       )}
+    </Card>
+  );
+};
+
+// 待办卡片：有需要处理的事项时高亮，无事时沉下去
+const TodoCard = ({ title, value, tone }) => {
+  const active = Number(value) > 0;
+  const colors = {
+    danger: active ? '#B42318' : '#98A2B3',
+    warning: active ? '#B54708' : '#98A2B3',
+  };
+  return (
+    <Card size="small">
+      <Statistic
+        title={title}
+        value={value || 0}
+        valueStyle={{ color: colors[tone], fontSize: 30, fontWeight: 600 }}
+      />
+      <Text type="secondary">{active ? '需要尽快处理' : '暂无待办'}</Text>
     </Card>
   );
 };
@@ -119,7 +135,7 @@ const LibraryDashboard = () => {
       title: '类型',
       dataIndex: 'category',
       key: 'category',
-      render: (category) => <Tag color="blue">{category}</Tag>,
+      render: (category) => <Tag color={tagColor(category)}>{category}</Tag>,
     },
     {
       title: '版本',
@@ -193,74 +209,70 @@ const LibraryDashboard = () => {
 
   return (
     <div>
-      <Card
-        title={<Space><DashboardOutlined />资料库概览</Space>}
+      <PageHeader
+        title="资料库概览"
+        subtitle={`当前账号${capabilities.canCreate ? '可上传资料' : '仅可查看资料'}，${capabilities.canDelete ? '可删除权限内资料' : '不可删除资料'}`}
         extra={<Button icon={<ReloadOutlined />} onClick={fetchStats} loading={loading}>刷新</Button>}
-      >
-        <Alert
-          type="info"
-          showIcon
-          style={{ marginBottom: 16 }}
-          message={`当前账号：${capabilities.canCreate ? '可上传资料' : '仅查看资料'}，${capabilities.canDelete ? '可删除权限内资料' : '不可删除资料'}`}
+      />
+
+      {/* 待办优先：需要管理员处理的事项放在最上面 */}
+      <Row gutter={[16, 16]}>
+        <Col xs={24} sm={12} lg={6}>
+          <TodoCard title="复审逾期" value={summary.reviewOverdue} tone="danger" />
+        </Col>
+        <Col xs={24} sm={12} lg={6}>
+          <TodoCard title="30 天内需复审" value={summary.reviewDueSoon} tone="warning" />
+        </Col>
+      </Row>
+
+      {/* 总量指标 */}
+      <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
+        <Col xs={12} sm={8} lg={4}>
+          <Card size="small"><Statistic title="资料总数" value={summary.totalDocuments || 0} /></Card>
+        </Col>
+        <Col xs={12} sm={8} lg={4}>
+          <Card size="small"><Statistic title="可管理资料" value={summary.manageableDocuments || 0} /></Card>
+        </Col>
+        <Col xs={12} sm={8} lg={4}>
+          <Card size="small"><Statistic title="版本总数" value={summary.totalVersions || 0} /></Card>
+        </Col>
+        <Col xs={12} sm={8} lg={4}>
+          <Card size="small"><Statistic title="下载 / 浏览" value={`${summary.totalDownloads || 0} / ${summary.totalViews || 0}`} /></Card>
+        </Col>
+        <Col xs={12} sm={8} lg={4}>
+          <Card size="small"><Statistic title="近 30 天新增" value={summary.createdLast30Days || 0} /></Card>
+        </Col>
+        <Col xs={12} sm={8} lg={4}>
+          <Card size="small"><Statistic title="近 30 天更新" value={summary.updatedLast30Days || 0} /></Card>
+        </Col>
+      </Row>
+
+      <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
+        <Col xs={24} lg={8}><DistributionList title="按资料类型" data={categoryData} /></Col>
+        <Col xs={24} lg={8}><DistributionList title="按专业" data={professionData} /></Col>
+        <Col xs={24} lg={8}><DistributionList title="按科室" data={sectionData} /></Col>
+      </Row>
+
+      <Card title="最近更新资料" size="small" style={{ marginTop: 16 }}>
+        <Table
+          columns={recentDocumentColumns}
+          dataSource={stats?.recentDocuments || []}
+          rowKey="_id"
+          loading={loading}
+          pagination={false}
+          size="middle"
         />
+      </Card>
 
-        <Row gutter={[16, 16]}>
-          <Col xs={24} sm={12} lg={6}>
-            <Card size="small"><Statistic title="资料总数" value={summary.totalDocuments || 0} prefix={<FileTextOutlined />} /></Card>
-          </Col>
-          <Col xs={24} sm={12} lg={6}>
-            <Card size="small"><Statistic title="可管理资料" value={summary.manageableDocuments || 0} prefix={<SafetyCertificateOutlined />} /></Card>
-          </Col>
-          <Col xs={24} sm={12} lg={6}>
-            <Card size="small"><Statistic title="版本总数" value={summary.totalVersions || 0} prefix={<FileDoneOutlined />} /></Card>
-          </Col>
-          <Col xs={24} sm={12} lg={6}>
-            <Card size="small"><Statistic title="下载 / 浏览" value={`${summary.totalDownloads || 0} / ${summary.totalViews || 0}`} prefix={<DownloadOutlined />} /></Card>
-          </Col>
-        </Row>
-
-        <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
-          <Col xs={24} sm={12} lg={6}>
-            <Card size="small"><Statistic title="近 30 天新增" value={summary.createdLast30Days || 0} /></Card>
-          </Col>
-          <Col xs={24} sm={12} lg={6}>
-            <Card size="small"><Statistic title="近 30 天更新" value={summary.updatedLast30Days || 0} /></Card>
-          </Col>
-          <Col xs={24} sm={12} lg={6}>
-            <Card size="small"><Statistic title="复审逾期" value={summary.reviewOverdue || 0} valueStyle={{ color: summary.reviewOverdue ? '#cf1322' : undefined }} /></Card>
-          </Col>
-          <Col xs={24} sm={12} lg={6}>
-            <Card size="small"><Statistic title="30 天内需复审" value={summary.reviewDueSoon || 0} valueStyle={{ color: summary.reviewDueSoon ? '#d48806' : undefined }} /></Card>
-          </Col>
-        </Row>
-
-        <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
-          <Col xs={24} lg={8}><DistributionList title="按资料类型" data={categoryData} /></Col>
-          <Col xs={24} lg={8}><DistributionList title="按专业" data={professionData} /></Col>
-          <Col xs={24} lg={8}><DistributionList title="按科室" data={sectionData} /></Col>
-        </Row>
-
-        <Card title="最近更新资料" size="small" style={{ marginTop: 16 }}>
-          <Table
-            columns={recentDocumentColumns}
-            dataSource={stats?.recentDocuments || []}
-            rowKey="_id"
-            loading={loading}
-            pagination={false}
-            size="middle"
-          />
-        </Card>
-
-        <Card title="最近资料库操作" size="small" style={{ marginTop: 16 }}>
-          <Table
-            columns={activityColumns}
-            dataSource={stats?.recentActivities || []}
-            rowKey="_id"
-            loading={loading}
-            pagination={false}
-            size="middle"
-          />
-        </Card>
+      <Card title="最近资料库操作" size="small" style={{ marginTop: 16 }}>
+        <Table
+          columns={activityColumns}
+          dataSource={stats?.recentActivities || []}
+          rowKey="_id"
+          loading={loading}
+          pagination={false}
+          size="middle"
+        />
       </Card>
     </div>
   );

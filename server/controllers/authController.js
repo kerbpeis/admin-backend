@@ -2,10 +2,25 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { query, isDuplicateKeyError } = require('../config/db');
 const { serializePermission, serializeRole, serializeUser } = require('../utils/mysqlUtils');
+const { sendServerError } = require('../utils/serverError');
+const { validateFields } = require('../utils/validation');
 
 const DEFAULT_TOKEN_EXPIRES_IN = '7d';
+const DEV_JWT_SECRET = 'dev_jwt_secret_change_me';
 
-const getJwtSecret = () => process.env.JWT_SECRET || 'dev_jwt_secret_change_me';
+let devSecretWarned = false;
+
+const getJwtSecret = () => {
+  if (process.env.JWT_SECRET) return process.env.JWT_SECRET;
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('生产环境必须配置 JWT_SECRET 环境变量');
+  }
+  if (!devSecretWarned) {
+    devSecretWarned = true;
+    console.warn('未配置 JWT_SECRET，正在使用开发默认密钥，请勿用于生产环境');
+  }
+  return DEV_JWT_SECRET;
+};
 
 const generateToken = (userId) => jwt.sign(
   { userId },
@@ -43,26 +58,47 @@ const loadUserRoles = async (userId) => {
 };
 
 const getUserById = async (userId) => {
-  const rows = await query('SELECT * FROM users WHERE id = ?', [userId]);
+  const rows = await query(
+    `SELECT u.*, c.name AS company_name
+     FROM users u
+     LEFT JOIN companies c ON c.id = u.company_id
+     WHERE u.id = ?`,
+    [userId]
+  );
   if (!rows[0]) return null;
   const roles = await loadUserRoles(rows[0].id);
   return serializeUser(rows[0], roles);
 };
 
-// 用户注册
+// 用户注册（必须携带有效的公司邀请码）
 const register = async (req, res) => {
   try {
-    const { name, email, password, department, section } = req.body;
+    const validation = validateFields({
+      name: req.body?.name,
+      email: req.body?.email,
+      password: req.body?.password,
+      department: req.body?.department,
+      section: req.body?.section,
+      inviteCode: req.body?.inviteCode,
+    });
+    if (!validation.ok) {
+      return res.status(400).json({ message: validation.message, field: validation.field });
+    }
+    const { name, email, password, department, section, inviteCode } = validation.values;
 
-    if (!name || !email || !password || !department || !section) {
-      return res.status(400).json({ message: '请填写姓名、邮箱、密码、部门和科室' });
+    const companyRows = await query(
+      'SELECT id FROM companies WHERE invite_code = ? LIMIT 1',
+      [inviteCode]
+    );
+    if (!companyRows[0]) {
+      return res.status(400).json({ message: '邀请码无效，请向公司管理员索取正确的邀请码' });
     }
 
-    const passwordHash = await bcrypt.hash(password, 10);
+    const passwordHash = await bcrypt.hash(password, 12);
     const result = await query(
-      `INSERT INTO users (name, email, password_hash, department, section, is_admin)
-       VALUES (?, ?, ?, ?, ?, 0)`,
-      [name, email, passwordHash, department, section]
+      `INSERT INTO users (company_id, name, email, password_hash, department, section, is_admin, platform_role)
+       VALUES (?, ?, ?, ?, ?, ?, 0, 'member')`,
+      [companyRows[0].id, name, email, passwordHash, department, section]
     );
 
     const user = await getUserById(result.insertId);
@@ -77,18 +113,21 @@ const register = async (req, res) => {
     if (isDuplicateKeyError(err)) {
       return res.status(400).json({ message: '该邮箱已被注册' });
     }
-    res.status(500).json({ message: '注册失败', error: err.message });
+    sendServerError(res, err, '注册失败');
   }
 };
 
 // 用户登录
 const login = async (req, res) => {
   try {
-    const { email, password } = req.body;
-
-    if (!email || !password) {
-      return res.status(400).json({ message: '请输入邮箱和密码' });
+    const validation = validateFields({
+      email: req.body?.email,
+      password: req.body?.password,
+    });
+    if (!validation.ok) {
+      return res.status(400).json({ message: validation.message, field: validation.field });
     }
+    const { email, password } = validation.values;
 
     const rows = await query('SELECT * FROM users WHERE email = ?', [email]);
     const dbUser = rows[0];
@@ -106,8 +145,7 @@ const login = async (req, res) => {
       token,
     });
   } catch (err) {
-    console.error('Login error:', err);
-    res.status(500).json({ message: '登录失败', error: err.message });
+    sendServerError(res, err, '登录失败');
   }
 };
 

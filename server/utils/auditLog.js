@@ -29,6 +29,10 @@ const recordAuditLog = async ({
   resourceId = null,
   resourceName = null,
   status = 'success',
+  generator = null,
+  model = null,
+  promptTokens = null,
+  completionTokens = null,
   metadata = {},
 }) => {
   if (!action || !resourceType) return false;
@@ -37,8 +41,8 @@ const recordAuditLog = async ({
     await execute(
       connection,
       `INSERT INTO audit_logs
-       (actor_id, action, resource_type, resource_id, resource_name, status, ip_address, user_agent, metadata)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (actor_id, action, resource_type, resource_id, resource_name, status, generator, model, prompt_tokens, completion_tokens, ip_address, user_agent, metadata)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         toId(actorId || req?.user?.id),
         action,
@@ -46,6 +50,10 @@ const recordAuditLog = async ({
         resourceId == null ? null : String(resourceId),
         resourceName || null,
         status,
+        generator || metadata?.generator || null,
+        model || metadata?.model || null,
+        promptTokens != null ? Number(promptTokens) : (metadata?.llmUsage?.promptTokens ?? null),
+        completionTokens != null ? Number(completionTokens) : (metadata?.llmUsage?.completionTokens ?? null),
         pickIpAddress(req),
         req?.headers?.['user-agent'] || null,
         normalizeMetadata(metadata),

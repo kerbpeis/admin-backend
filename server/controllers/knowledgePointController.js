@@ -1,10 +1,13 @@
 const { query } = require('../config/db');
-const { serializeFile, serializeKnowledgePoint, stringifyTags, toId, placeholders } = require('../utils/mysqlUtils');
+const { serializeFile, serializeKnowledgePoint, stringifyTags, toId, placeholders, firstPresent, clampPageSize } = require('../utils/mysqlUtils');
+const { sendServerError } = require('../utils/serverError');
 const {
+  buildCompanyFilter,
   buildVisibilityFilter,
   canReadScopedResource,
   canManageScopedResource,
   ensureWritableVisibility,
+  getScopedCompanyId,
   resolveDepartmentIds,
   resolveWritableTarget,
 } = require('../utils/resourceAccess');
@@ -96,6 +99,11 @@ const firstFilled = (source, keys, fallback = null) => {
   return fallback;
 };
 
+const hasTargetOverride = (source = {}) => (
+  ['departmentId', 'sectionId', 'department', 'section', 'professionId', 'profession']
+    .some((key) => Object.prototype.hasOwnProperty.call(source, key))
+);
+
 const resolveWritableTargetFromBody = async (user, body, fallback = {}) => {
   const sectionValue = firstFilled(
     body,
@@ -107,12 +115,15 @@ const resolveWritableTargetFromBody = async (user, body, fallback = {}) => {
     ['professionId', 'profession'],
     fallback.professionId
   );
-  const sectionIds = sectionValue ? await resolveDepartmentIds(sectionValue) : [];
-  const professionIds = professionValue ? await resolveDepartmentIds(professionValue, 'profession') : [];
+  const requestedCompanyId = firstFilled(body, ['companyId'], fallback.companyId);
+  const companyId = getScopedCompanyId(user, requestedCompanyId);
+  const sectionIds = sectionValue ? await resolveDepartmentIds(sectionValue, null, companyId) : [];
+  const professionIds = professionValue ? await resolveDepartmentIds(professionValue, 'profession', companyId) : [];
 
   return resolveWritableTarget(user, {
     departmentId: sectionIds[0] || toId(sectionValue) || null,
     professionId: professionIds[0] || toId(professionValue) || null,
+    companyId,
   });
 };
 
@@ -131,18 +142,23 @@ exports.getKnowledgePoints = async (req, res) => {
     const filters = [`kp.status = 'active'`];
     const params = [];
 
+    const companyFilter = buildCompanyFilter(req.user, 'kp', { requestedCompanyId: req.query.companyId });
+    filters.push(companyFilter.sql);
+    params.push(...companyFilter.params);
+
     const visibilityFilter = await buildVisibilityFilter(req.user, 'kp', 'created_by');
     filters.push(visibilityFilter.sql);
     params.push(...visibilityFilter.params);
+    const companyId = getScopedCompanyId(req.user, req.query.companyId);
 
     if (departmentId) {
-      const ids = await resolveDepartmentIds(departmentId);
+      const ids = await resolveDepartmentIds(departmentId, null, companyId);
       filters.push(`kp.department_id IN (${placeholders(ids.length ? ids : [0])})`);
       params.push(...(ids.length ? ids : [0]));
     }
 
     if (professionId) {
-      const ids = await resolveDepartmentIds(professionId, 'profession');
+      const ids = await resolveDepartmentIds(professionId, 'profession', companyId);
       filters.push(`kp.profession_id IN (${placeholders(ids.length ? ids : [0])})`);
       params.push(...(ids.length ? ids : [0]));
     }
@@ -162,6 +178,7 @@ exports.getKnowledgePoints = async (req, res) => {
     const sortColumn = sortable[sortBy] || 'kp.created_at';
     const direction = sortOrder === 'asc' ? 'ASC' : 'DESC';
     const where = `WHERE ${filters.join(' AND ')}`;
+    const pageSize = clampPageSize(limit);
     const countRows = await query(`SELECT COUNT(*) AS total FROM knowledge_points kp ${where}`, params);
     const total = countRows[0].total;
 
@@ -170,20 +187,19 @@ exports.getKnowledgePoints = async (req, res) => {
        ${where}
        ORDER BY ${sortColumn} ${direction}
        LIMIT ? OFFSET ?`,
-      [...params, Number(limit), (Number(page) - 1) * Number(limit)]
+      [...params, pageSize, (Number(page) - 1) * pageSize]
     );
 
     res.json({
       knowledgePoints: await serializeKnowledgePointsForUser(req.user, rows),
       pagination: {
         current: Number(page),
-        pages: Math.ceil(total / Number(limit)),
+        pages: Math.ceil(total / pageSize),
         total,
       },
     });
   } catch (err) {
-    console.error('获取知识点列表失败:', err);
-    res.status(500).json({ message: '获取知识点列表失败', error: err.message });
+    sendServerError(res, err, '获取知识点列表失败');
   }
 };
 
@@ -199,13 +215,14 @@ exports.getKnowledgePoint = async (req, res) => {
       return res.status(403).json({ message: '没有权限查看此知识点' });
     }
 
+    const fileCompanyFilter = buildCompanyFilter(req.user, 'f');
     const fileVisibilityFilter = await buildVisibilityFilter(req.user, 'f', 'uploaded_by');
     await query('UPDATE knowledge_points SET view_count = view_count + 1 WHERE id = ?', [id]);
     const files = await query(
       `${baseFileSelect}
-       WHERE f.knowledge_point_id = ? AND f.status = 'active' AND ${fileVisibilityFilter.sql}
+       WHERE f.knowledge_point_id = ? AND f.status = 'active' AND ${fileCompanyFilter.sql} AND ${fileVisibilityFilter.sql}
        ORDER BY f.created_at DESC`,
-      [id, ...fileVisibilityFilter.params]
+      [id, ...fileCompanyFilter.params, ...fileVisibilityFilter.params]
     );
 
     const serializedFiles = await serializeFilesForUser(req.user, files);
@@ -215,7 +232,7 @@ exports.getKnowledgePoint = async (req, res) => {
       { files: serializedFiles }
     ));
   } catch (err) {
-    res.status(500).json({ message: '获取知识点详情失败', error: err.message });
+    sendServerError(res, err, '获取知识点详情失败');
   }
 };
 
@@ -246,9 +263,10 @@ exports.createKnowledgePoint = async (req, res) => {
 
     const result = await query(
       `INSERT INTO knowledge_points
-       (name, description, department_id, profession_id, category, tags, visibility, icon, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (company_id, name, description, department_id, profession_id, category, tags, visibility, icon, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
+        target.companyId,
         name,
         description,
         target.departmentId,
@@ -266,7 +284,7 @@ exports.createKnowledgePoint = async (req, res) => {
       knowledgePoint: await serializeKnowledgePointForUser(req.user, await getKnowledgePointRow(result.insertId)),
     });
   } catch (err) {
-    res.status(500).json({ message: '创建知识点失败', error: err.message });
+    sendServerError(res, err, '创建知识点失败');
   }
 };
 
@@ -282,19 +300,39 @@ exports.updateKnowledgePoint = async (req, res) => {
       return res.status(403).json({ message: '没有权限编辑此知识点' });
     }
 
-    const { name, description = '', category = '', tags, visibility, icon } = req.body;
+    const { name, tags, visibility, icon } = req.body;
+    // 未传 description/category 时保持原值，避免被默认空串清空
+    const description = firstPresent(req.body, ['description'], knowledgePoint.description);
+    const category = firstPresent(req.body, ['category'], knowledgePoint.category);
     const visibilityCheck = ensureWritableVisibility(req.user, visibility || knowledgePoint.visibility);
     if (!visibilityCheck.ok) {
       return res.status(403).json({ message: visibilityCheck.message });
     }
 
+    let target = {
+      ok: true,
+      departmentId: knowledgePoint.department_id,
+      professionId: knowledgePoint.profession_id,
+    };
+    if (hasTargetOverride(req.body)) {
+      target = await resolveWritableTargetFromBody(req.user, req.body, {
+        departmentId: knowledgePoint.department_id,
+        professionId: knowledgePoint.profession_id,
+      });
+      if (!target.ok) {
+        return res.status(403).json({ message: target.message });
+      }
+    }
+
     await query(
       `UPDATE knowledge_points
-       SET name = ?, description = ?, category = ?, tags = ?, visibility = ?, icon = ?
+       SET name = ?, description = ?, department_id = ?, profession_id = ?, category = ?, tags = ?, visibility = ?, icon = ?
        WHERE id = ?`,
       [
         name || knowledgePoint.name,
         description,
+        target.departmentId,
+        target.professionId,
         category,
         stringifyTags(tags) ?? knowledgePoint.tags,
         visibilityCheck.visibility,
@@ -308,7 +346,7 @@ exports.updateKnowledgePoint = async (req, res) => {
       knowledgePoint: await serializeKnowledgePointForUser(req.user, await getKnowledgePointRow(id)),
     });
   } catch (err) {
-    res.status(500).json({ message: '更新知识点失败', error: err.message });
+    sendServerError(res, err, '更新知识点失败');
   }
 };
 
@@ -327,7 +365,7 @@ exports.deleteKnowledgePoint = async (req, res) => {
     await query(`UPDATE knowledge_points SET status = 'deleted' WHERE id = ?`, [id]);
     res.json({ message: '知识点删除成功' });
   } catch (err) {
-    res.status(500).json({ message: '删除知识点失败', error: err.message });
+    sendServerError(res, err, '删除知识点失败');
   }
 };
 
@@ -360,6 +398,6 @@ exports.toggleFavorite = async (req, res) => {
       isFavorited: !isFavorited,
     });
   } catch (err) {
-    res.status(500).json({ message: '收藏操作失败', error: err.message });
+    sendServerError(res, err, '收藏操作失败');
   }
 };

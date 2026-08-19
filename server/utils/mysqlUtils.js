@@ -18,6 +18,23 @@ const parseTags = (value) => {
   }
 };
 
+// 取请求体中第一个出现（且非 undefined）的字段，未传时回退到 fallback（保持原值）
+const firstPresent = (source, keys, fallback = null) => {
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(source, key) && source[key] !== undefined) {
+      return source[key];
+    }
+  }
+  return fallback;
+};
+
+// 分页大小统一封顶，避免客户端传入超大 limit 打满数据库
+const clampPageSize = (value, fallback = 20, max = 100) => {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.min(parsed, max);
+};
+
 const stringifyTags = (value) => {
   if (!value) return null;
   if (Array.isArray(value)) return JSON.stringify(value.filter(Boolean));
@@ -79,6 +96,9 @@ const serializeUser = (row, roles = []) => row && ({
   department: row.department,
   section: row.section,
   isAdmin: toBoolean(row.is_admin),
+  platformRole: row.platform_role || 'member',
+  companyId: idString(row.company_id),
+  companyName: row.company_name || '',
   roles,
   permissions: collectUserPermissions(roles),
   permissionNames: collectUserPermissions(roles).map((permission) => permission.name),
@@ -88,6 +108,8 @@ const serializeUser = (row, roles = []) => row && ({
 const serializeDepartment = (row, extras = {}) => row && ({
   _id: idString(row.id),
   id: idString(row.id),
+  companyId: idString(row.company_id),
+  companyName: row.company_name || '',
   name: row.name,
   description: row.description || '',
   type: row.type,
@@ -106,6 +128,7 @@ const serializeDepartment = (row, extras = {}) => row && ({
 const serializeKnowledgePoint = (row, extras = {}) => row && ({
   _id: idString(row.id),
   id: idString(row.id),
+  companyId: idString(row.company_id),
   name: row.name,
   description: row.description || '',
   department: row.department_id ? {
@@ -142,9 +165,9 @@ const serializeKnowledgePoint = (row, extras = {}) => row && ({
 const serializeFile = (row, extras = {}) => row && ({
   _id: idString(row.id),
   id: idString(row.id),
+  companyId: idString(row.company_id),
   name: row.name,
   originalName: row.original_name,
-  path: row.path,
   size: Number(row.size || 0),
   mimeType: row.mime_type,
   extension: row.extension,
@@ -192,6 +215,16 @@ const serializeFile = (row, extras = {}) => row && ({
   ...createdUpdated(row),
 });
 
+const serializeCompany = (row) => row && ({
+  _id: idString(row.id),
+  id: idString(row.id),
+  name: row.name,
+  inviteCode: row.invite_code,
+  emailDomains: parseTags(row.email_domains),
+  status: row.status,
+  ...createdUpdated(row),
+});
+
 const placeholders = (values) => values.map(() => '?').join(', ');
 
 module.exports = {
@@ -199,10 +232,13 @@ module.exports = {
   idString,
   toBoolean,
   parseTags,
+  firstPresent,
+  clampPageSize,
   stringifyTags,
   serializePermission,
   serializeRole,
   serializeUser,
+  serializeCompany,
   serializeDepartment,
   serializeKnowledgePoint,
   serializeFile,

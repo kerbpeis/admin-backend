@@ -1,4 +1,6 @@
 const { query, withTransaction } = require('../config/db');
+const { getUserCompanyId, isPlatformAdmin } = require('../utils/resourceAccess');
+const { sendServerError } = require('../utils/serverError');
 const {
   deletePartnerDomainSnapshot,
   readPartnerDomainSnapshot,
@@ -439,8 +441,7 @@ const getPartnerState = async (req, res) => {
       ...serializePartnerState(rows[0]),
     });
   } catch (err) {
-    console.error('获取搭子状态失败:', err);
-    return res.status(500).json({ message: '获取搭子状态失败', error: err.message });
+    return sendServerError(res, err, '获取搭子状态失败');
   }
 };
 
@@ -458,8 +459,7 @@ const getPartnerDomainState = async (req, res) => {
       ...domain,
     });
   } catch (err) {
-    console.error('获取搭子业务数据失败:', err);
-    return res.status(500).json({ message: '获取搭子业务数据失败', error: err.message });
+    return sendServerError(res, err, '获取搭子业务数据失败');
   }
 };
 
@@ -468,11 +468,17 @@ const getPartnerMembers = async (req, res) => {
     const userId = toUserId(req.user?.id);
     if (!userId) return res.status(401).json({ message: '未认证的用户' });
 
-    const dbUsers = await query(
-      `SELECT id, name, department, section, created_at, updated_at
-       FROM users
-       ORDER BY created_at ASC, id ASC`
-    );
+    const companyId = getUserCompanyId(req.user);
+    // 真实用户按公司隔离；无 company_id 且非平台超管时查不到任何真实用户
+    const dbUsers = (companyId || isPlatformAdmin(req.user))
+      ? await query(
+        `SELECT id, name, department, section, created_at, updated_at
+         FROM users
+         ${companyId ? 'WHERE company_id = ?' : ''}
+         ORDER BY created_at ASC, id ASC`,
+        companyId ? [companyId] : []
+      )
+      : [];
     const seedUsers = partnerDirectorySeedUsers.map((user, index) => serializePartnerDirectoryUser(user, index));
     const dbDirectoryUsers = dbUsers.map((user, index) => serializeDbPartnerDirectoryUser({
       ...user,
@@ -1127,8 +1133,7 @@ const savePartnerState = async (req, res) => {
       ...serializePartnerState(savedRow),
     });
   } catch (err) {
-    console.error('保存搭子状态失败:', err);
-    return res.status(500).json({ message: '保存搭子状态失败', error: err.message });
+    return sendServerError(res, err, '保存搭子状态失败');
   }
 };
 
@@ -1147,8 +1152,7 @@ const deletePartnerState = async (req, res) => {
       state: null,
     });
   } catch (err) {
-    console.error('清除搭子状态失败:', err);
-    return res.status(500).json({ message: '清除搭子状态失败', error: err.message });
+    return sendServerError(res, err, '清除搭子状态失败');
   }
 };
 

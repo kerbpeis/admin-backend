@@ -1,5 +1,6 @@
 const { query, isDuplicateKeyError } = require('../config/db');
 const { serializePermission, toId, placeholders } = require('../utils/mysqlUtils');
+const { sendServerError } = require('../utils/serverError');
 
 const getPermissions = async (req, res) => {
   try {
@@ -15,7 +16,7 @@ const getPermissions = async (req, res) => {
     const permissions = await query(sql, params);
     res.json({ permissions: permissions.map(serializePermission) });
   } catch (err) {
-    res.status(500).json({ message: '获取权限列表失败', error: err.message });
+    sendServerError(res, err, '获取权限列表失败');
   }
 };
 
@@ -40,7 +41,7 @@ const createPermission = async (req, res) => {
     if (isDuplicateKeyError(err)) {
       return res.status(400).json({ message: '该权限已存在' });
     }
-    res.status(500).json({ message: '权限创建失败', error: err.message });
+    sendServerError(res, err, '权限创建失败');
   }
 };
 
@@ -80,7 +81,7 @@ const batchCreatePermissions = async (req, res) => {
       existing: existingNames,
     });
   } catch (err) {
-    res.status(500).json({ message: '批量创建权限失败', error: err.message });
+    sendServerError(res, err, '批量创建权限失败');
   }
 };
 
@@ -94,7 +95,7 @@ const getPermission = async (req, res) => {
 
     res.json({ permission: serializePermission(rows[0]) });
   } catch (err) {
-    res.status(500).json({ message: '获取权限信息失败', error: err.message });
+    sendServerError(res, err, '获取权限信息失败');
   }
 };
 
@@ -122,7 +123,7 @@ const updatePermission = async (req, res) => {
     if (isDuplicateKeyError(err)) {
       return res.status(400).json({ message: '该权限名已被使用' });
     }
-    res.status(500).json({ message: '权限更新失败', error: err.message });
+    sendServerError(res, err, '权限更新失败');
   }
 };
 
@@ -141,7 +142,7 @@ const deletePermission = async (req, res) => {
 
     res.json({ message: '权限删除成功' });
   } catch (err) {
-    res.status(500).json({ message: '权限删除失败', error: err.message });
+    sendServerError(res, err, '权限删除失败');
   }
 };
 

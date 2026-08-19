@@ -5,6 +5,7 @@ const {
   canReadScopedResource,
 } = require('../utils/resourceAccess');
 const { PERMISSIONS, hasPermission } = require('../utils/authorization');
+const { sendServerError } = require('../utils/serverError');
 
 const baseFileFavoriteSelect = `
   SELECT f.*, ff.created_at AS favorite_created_at,
@@ -166,8 +167,7 @@ exports.getFavorites = async (req, res) => {
 
     res.json({ favorites: favorites.slice(0, limit) });
   } catch (err) {
-    console.error('获取收藏列表失败:', err);
-    res.status(500).json({ message: '获取收藏列表失败', error: err.message });
+    sendServerError(res, err, '获取收藏列表失败');
   }
 };
 
@@ -221,8 +221,7 @@ exports.addFavorite = async (req, res) => {
       favorite: serializeKnowledgePointFavorite(favorite),
     });
   } catch (err) {
-    console.error('添加收藏失败:', err);
-    res.status(500).json({ message: '添加收藏失败', error: err.message });
+    sendServerError(res, err, '添加收藏失败');
   }
 };
 
@@ -248,7 +247,6 @@ exports.deleteFavorite = async (req, res) => {
     await query('DELETE FROM knowledge_point_favorites WHERE knowledge_point_id = ? AND user_id = ?', [id, toId(req.user.id)]);
     return res.json({ message: '已取消收藏', isFavorited: false });
   } catch (err) {
-    console.error('取消收藏失败:', err);
-    res.status(500).json({ message: '取消收藏失败', error: err.message });
+    sendServerError(res, err, '取消收藏失败');
   }
 };

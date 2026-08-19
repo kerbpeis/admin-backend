@@ -1,4 +1,5 @@
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { pool, query, withTransaction } = require('../config/db');
@@ -228,27 +229,67 @@ const upsertRole = async (connection, role, permissionIds) => {
   return roleId;
 };
 
-const upsertDepartments = async (connection) => {
+const generateInviteCode = (length = 12) => {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  const bytes = crypto.randomBytes(length);
+  let code = '';
+  for (let i = 0; i < length; i += 1) {
+    code += alphabet[bytes[i] % alphabet.length];
+  }
+  return code;
+};
+
+const ensureDefaultCompany = async (connection) => {
+  const [rows] = await connection.execute('SELECT id, name FROM companies ORDER BY id LIMIT 1');
+  if (rows[0]) return rows[0];
+
+  const name = process.env.DEFAULT_COMPANY_NAME || '默认煤矿公司';
+  const [result] = await connection.execute(
+    'INSERT INTO companies (name, invite_code) VALUES (?, ?)',
+    [name, generateInviteCode()]
+  );
+  return { id: result.insertId, name };
+};
+
+const upsertDepartments = async (connection, companyId) => {
   let order = 1;
 
   for (const profession of departmentTree) {
-    await connection.execute(
-      `INSERT INTO departments (name, description, type, parent_department_id, order_index, is_active)
-       VALUES (?, ?, 'profession', NULL, ?, 1)
-       ON DUPLICATE KEY UPDATE description = VALUES(description), type = 'profession', parent_department_id = NULL, order_index = VALUES(order_index), is_active = 1`,
-      [profession.name, profession.description, order++]
+    // 专业和科室都属于公司，避免不同公司之间目录互相影响。
+    const [existingProfession] = await connection.execute(
+      "SELECT id FROM departments WHERE name = ? AND type = 'profession' AND company_id = ?",
+      [profession.name, companyId]
     );
 
-    const [professionRows] = await connection.execute('SELECT id FROM departments WHERE name = ?', [profession.name]);
-    const professionId = professionRows[0].id;
+    let professionId = existingProfession[0]?.id;
+
+    if (!professionId) {
+      const [result] = await connection.execute(
+        `INSERT INTO departments (company_id, name, description, type, parent_department_id, order_index, is_active)
+         VALUES (?, ?, ?, 'profession', NULL, ?, 1)`,
+        [companyId, profession.name, profession.description, order]
+      );
+      professionId = result.insertId;
+    }
+
+    order += 1;
 
     for (const section of profession.sections) {
-      await connection.execute(
-        `INSERT INTO departments (name, description, type, parent_department_id, order_index, is_active)
-         VALUES (?, ?, 'section', ?, ?, 1)
-         ON DUPLICATE KEY UPDATE description = VALUES(description), type = 'section', parent_department_id = VALUES(parent_department_id), order_index = VALUES(order_index), is_active = 1`,
-        [section, `${profession.name} / ${section}`, professionId, order++]
+      // 科室属于公司，按 (company_id, name, type) 判断已存在则跳过，保证幂等
+      const [existingSection] = await connection.execute(
+        "SELECT id FROM departments WHERE name = ? AND type = 'section' AND company_id = ?",
+        [section, companyId]
       );
+
+      if (!existingSection[0]) {
+        await connection.execute(
+          `INSERT INTO departments (company_id, name, description, type, parent_department_id, order_index, is_active)
+           VALUES (?, ?, ?, 'section', ?, ?, 1)`,
+          [companyId, section, `${profession.name} / ${section}`, professionId, order]
+        );
+      }
+
+      order += 1;
     }
   }
 };
@@ -296,24 +337,28 @@ const ensureSeedFile = (document, version, versionNumber) => {
   };
 };
 
-const getDepartmentIdByName = async (connection, name) => {
-  const [rows] = await connection.execute('SELECT id FROM departments WHERE name = ? AND is_active = 1', [name]);
+// 专业和科室都属于公司；解析时限制在默认公司范围内。
+const getDepartmentIdByName = async (connection, name, companyId) => {
+  const [rows] = await connection.execute(
+    'SELECT id FROM departments WHERE name = ? AND is_active = 1 AND company_id = ?',
+    [name, companyId]
+  );
   return rows[0]?.id || null;
 };
 
-const upsertLibraryDocuments = async (connection, uploaderId) => {
+const upsertLibraryDocuments = async (connection, uploaderId, companyId) => {
   for (const document of libraryDocuments) {
-    const professionId = await getDepartmentIdByName(connection, document.profession);
-    const sectionId = await getDepartmentIdByName(connection, document.section);
+    const professionId = await getDepartmentIdByName(connection, document.profession, companyId);
+    const sectionId = await getDepartmentIdByName(connection, document.section, companyId);
     const currentVersionNumber = document.versions.length;
     const currentVersion = document.versions[currentVersionNumber - 1];
     const currentFile = ensureSeedFile(document, currentVersion, currentVersionNumber);
 
     const [existingRows] = await connection.execute(
       `SELECT id FROM files
-       WHERE name = ? AND department_id = ? AND profession_id = ? AND status <> 'deleted'
+       WHERE company_id = ? AND name = ? AND department_id = ? AND profession_id = ? AND status <> 'deleted'
        LIMIT 1`,
-      [document.title, sectionId, professionId]
+      [companyId, document.title, sectionId, professionId]
     );
 
     let fileId = existingRows[0]?.id;
@@ -323,7 +368,8 @@ const upsertLibraryDocuments = async (connection, uploaderId) => {
         `UPDATE files
          SET original_name = ?, path = ?, size = ?, mime_type = ?, extension = 'txt',
              description = ?, category = ?, current_version = ?, version_label = ?, visibility = 'department',
-             tags = ?, effective_date = ?, review_date = ?, issuer = ?, approver = ?, icon = ?, color = ?
+             tags = ?, effective_date = ?, review_date = ?, issuer = ?, approver = ?, icon = ?, color = ?,
+             company_id = ?
          WHERE id = ?`,
         [
           currentFile.name,
@@ -341,16 +387,18 @@ const upsertLibraryDocuments = async (connection, uploaderId) => {
           document.approver,
           document.icon,
           document.color,
+          companyId,
           fileId,
         ]
       );
     } else {
       const [result] = await connection.execute(
         `INSERT INTO files
-         (name, original_name, path, size, mime_type, extension, description, category, department_id, profession_id,
+         (company_id, name, original_name, path, size, mime_type, extension, description, category, department_id, profession_id,
           uploaded_by, current_version, version_label, status, visibility, tags, effective_date, review_date, issuer, approver, icon, color)
-         VALUES (?, ?, ?, ?, ?, 'txt', ?, ?, ?, ?, ?, ?, ?, 'active', 'department', ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, 'txt', ?, ?, ?, ?, ?, ?, ?, 'active', 'department', ?, ?, ?, ?, ?, ?, ?)`,
         [
+          companyId,
           document.title,
           currentFile.name,
           currentFile.path,
@@ -420,16 +468,22 @@ const upsertLibraryDocuments = async (connection, uploaderId) => {
   }
 };
 
-const upsertAdmin = async (connection, adminRoleId) => {
+const upsertAdmin = async (connection, adminRoleId, companyId) => {
   const email = process.env.SEED_ADMIN_EMAIL || 'admin@example.com';
   const password = process.env.SEED_ADMIN_PASSWORD || 'admin123';
-  const passwordHash = await bcrypt.hash(password, 10);
+  const passwordHash = await bcrypt.hash(password, 12);
 
   await connection.execute(
-    `INSERT INTO users (name, email, password_hash, department, section, is_admin)
-     VALUES ('管理员', ?, ?, '生产技术', '采煤管理室', 1)
-     ON DUPLICATE KEY UPDATE name = VALUES(name), department = VALUES(department), section = VALUES(section), is_admin = 1`,
-    [email, passwordHash]
+    `INSERT INTO users (company_id, name, email, password_hash, department, section, is_admin, platform_role)
+     VALUES (?, '管理员', ?, ?, '生产技术', '采煤管理室', 1, 'super_admin')
+     ON DUPLICATE KEY UPDATE
+       company_id = VALUES(company_id),
+       name = VALUES(name),
+       department = VALUES(department),
+       section = VALUES(section),
+       is_admin = 1,
+       platform_role = 'super_admin'`,
+    [companyId, email, passwordHash]
   );
 
   const [userRows] = await connection.execute('SELECT id FROM users WHERE email = ?', [email]);
@@ -440,14 +494,20 @@ const upsertAdmin = async (connection, adminRoleId) => {
   return { email, password, userId };
 };
 
-const upsertUserWithRole = async (connection, user, roleId) => {
-  const passwordHash = await bcrypt.hash(user.password, 10);
+const upsertUserWithRole = async (connection, user, roleId, companyId) => {
+  const passwordHash = await bcrypt.hash(user.password, 12);
 
   await connection.execute(
-    `INSERT INTO users (name, email, password_hash, department, section, is_admin)
-     VALUES (?, ?, ?, ?, ?, 0)
-     ON DUPLICATE KEY UPDATE name = VALUES(name), department = VALUES(department), section = VALUES(section), is_admin = 0`,
-    [user.name, user.email, passwordHash, user.department, user.section]
+    `INSERT INTO users (company_id, name, email, password_hash, department, section, is_admin, platform_role)
+     VALUES (?, ?, ?, ?, ?, ?, 0, 'member')
+     ON DUPLICATE KEY UPDATE
+       company_id = VALUES(company_id),
+       name = VALUES(name),
+       department = VALUES(department),
+       section = VALUES(section),
+       is_admin = 0,
+       platform_role = 'member'`,
+    [companyId, user.name, user.email, passwordHash, user.department, user.section]
   );
 
   const [userRows] = await connection.execute('SELECT id FROM users WHERE email = ?', [user.email]);
@@ -538,23 +598,24 @@ const seed = async () => {
       readOnlyPermissions
     );
 
-    await upsertDepartments(connection);
-    const adminInfo = await upsertAdmin(connection, adminRoleId);
+    const defaultCompany = await ensureDefaultCompany(connection);
+    await upsertDepartments(connection, defaultCompany.id);
+    const adminInfo = await upsertAdmin(connection, adminRoleId, defaultCompany.id);
     await upsertUserWithRole(connection, {
       name: '资料维护员',
       email: process.env.SEED_MAINTAINER_EMAIL || 'maintainer@example.com',
       password: process.env.SEED_MAINTAINER_PASSWORD || 'maintainer123',
       department: '生产技术',
       section: '采煤管理室',
-    }, contentMaintainerRoleId);
+    }, contentMaintainerRoleId, defaultCompany.id);
     await upsertUserWithRole(connection, {
       name: '普通成员',
       email: process.env.SEED_READONLY_EMAIL || 'readonly@example.com',
       password: process.env.SEED_READONLY_PASSWORD || 'readonly123',
       department: '生产技术',
       section: '采煤管理室',
-    }, readOnlyRoleId);
-    await upsertLibraryDocuments(connection, adminInfo.userId);
+    }, readOnlyRoleId, defaultCompany.id);
+    await upsertLibraryDocuments(connection, adminInfo.userId, defaultCompany.id);
     return adminInfo;
   });
 

@@ -1,11 +1,13 @@
 const { query } = require('../config/db');
 const { PERMISSIONS, hasPermission } = require('../utils/authorization');
-const { buildVisibilityFilter } = require('../utils/resourceAccess');
+const { buildCompanyFilter, buildVisibilityFilter } = require('../utils/resourceAccess');
 const { toId } = require('../utils/mysqlUtils');
 const { recordAuditLog } = require('../utils/auditLog');
 const { clauseNumberToInt } = require('../utils/fileContentIndex');
 const { buildLlmAnswer } = require('../utils/agentLlmAnswer');
 const { getLlmModel } = require('../utils/llmClient');
+const answerCache = require('../utils/agentAnswerCache');
+const { sendServerError } = require('../utils/serverError');
 
 const MAX_QUESTION_LENGTH = 1200;
 const MAX_CONTEXT_TEXT_LENGTH = 900;
@@ -16,6 +18,7 @@ const MAX_TERM_COUNT = 24;
 const MAX_PASSAGE_FILES = 4;
 const MAX_PASSAGES_PER_FILE = 2;
 const PASSAGE_SNIPPET_CHARS = 180;
+const DEFAULT_LLM_HARD_TIMEOUT_MS = 8000;
 
 const baseDocumentSelect = `
   SELECT f.*,
@@ -282,17 +285,18 @@ const extractClauseNumbers = (question) => {
 // 按条款号直接命中资料正文条款，按资料标题与问题的相关度排序
 const fetchClauseMatches = async (user, clauseNumbers, terms) => {
   if (!clauseNumbers.length || !hasPermission(user, PERMISSIONS.FILE_READ)) return [];
+  const companyFilter = buildCompanyFilter(user, 'f');
   const visibilityFilter = await buildVisibilityFilter(user, 'f', 'uploaded_by');
   const rows = await query(
     `SELECT fc.file_id, fc.clause_no, fc.clause_no_num, fc.content,
        f.name AS file_name, f.version_label, f.current_version, f.updated_at
      FROM file_clauses fc
      JOIN files f ON f.id = fc.file_id
-     WHERE f.status = 'active' AND ${visibilityFilter.sql}
+     WHERE f.status = 'active' AND ${companyFilter.sql} AND ${visibilityFilter.sql}
        AND fc.clause_no_num IN (${clauseNumbers.map(() => '?').join(',')})
      ORDER BY f.updated_at DESC, fc.clause_no_num ASC
      LIMIT 24`,
-    [...visibilityFilter.params, ...clauseNumbers]
+    [...companyFilter.params, ...visibilityFilter.params, ...clauseNumbers]
   );
 
   const titleRelevance = (title) => {
@@ -323,10 +327,32 @@ const countTodayLlmCalls = async (userId) => {
     `SELECT COUNT(*) AS c FROM audit_logs
      WHERE actor_id = ? AND action = 'agent.query' AND status = 'success'
        AND created_at >= CURDATE()
-       AND JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.generator')) = 'llm'`,
+       AND generator = 'llm'`,
     [userId]
   );
   return Number(rows[0]?.c) || 0;
+};
+
+const getLlmHardTimeoutMs = () => {
+  const configured = Number(process.env.AGENT_LLM_HARD_TIMEOUT_MS) || DEFAULT_LLM_HARD_TIMEOUT_MS;
+  return Math.min(Math.max(configured, 1000), 30000);
+};
+
+const withLlmHardTimeout = async (promise, timeoutMs) => {
+  let timer = null;
+  let timedOut = false;
+
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      console.warn(`LLM 回答生成超过 ${timeoutMs}ms，回退模板回答`);
+      resolve(null);
+    }, timeoutMs);
+  });
+
+  const value = await Promise.race([promise, timeout]);
+  if (timer) clearTimeout(timer);
+  return { value, timedOut };
 };
 
 const scoreChunkContent = (content, terms) => {
@@ -345,6 +371,7 @@ const fetchContentPassages = async (user, terms) => {
   const passages = new Map();
   if (!terms.length || !hasPermission(user, PERMISSIONS.FILE_READ)) return passages;
 
+  const companyFilter = buildCompanyFilter(user, 'f');
   const visibilityFilter = await buildVisibilityFilter(user, 'f', 'uploaded_by');
   const likeFilter = buildLikeFilter(terms, ['c.content']);
   if (!likeFilter.sql) return passages;
@@ -353,10 +380,10 @@ const fetchContentPassages = async (user, terms) => {
     `SELECT c.file_id, c.chunk_index, c.content
      FROM file_content_chunks c
      JOIN files f ON f.id = c.file_id
-     WHERE f.status = 'active' AND ${visibilityFilter.sql}${likeFilter.sql}
+     WHERE f.status = 'active' AND ${companyFilter.sql} AND ${visibilityFilter.sql}${likeFilter.sql}
      ORDER BY c.file_id, c.chunk_index
      LIMIT 400`,
-    [...visibilityFilter.params, ...likeFilter.params]
+    [...companyFilter.params, ...visibilityFilter.params, ...likeFilter.params]
   );
 
   const byFile = new Map();
@@ -389,12 +416,13 @@ const fetchContentPassages = async (user, terms) => {
 const fetchReferencedDocument = async (user, referencedDocumentId) => {
   const id = toId(referencedDocumentId);
   if (!id || !hasPermission(user, PERMISSIONS.FILE_READ)) return [];
+  const companyFilter = buildCompanyFilter(user, 'f');
   const visibilityFilter = await buildVisibilityFilter(user, 'f', 'uploaded_by');
   const rows = await query(
     `${baseDocumentSelect}
-     WHERE f.id = ? AND f.status = 'active' AND ${visibilityFilter.sql}
+     WHERE f.id = ? AND f.status = 'active' AND ${companyFilter.sql} AND ${visibilityFilter.sql}
      LIMIT 1`,
-    [id, ...visibilityFilter.params]
+    [id, ...companyFilter.params, ...visibilityFilter.params]
   );
   return rows.map((row) => serializeDocumentSource(row, 100));
 };
@@ -413,6 +441,7 @@ const fetchContextLibrarySources = async (user, context) => {
 
 const fetchLibrarySources = async (user, terms, referencedDocumentId, contentPassages = new Map()) => {
   if (!hasPermission(user, PERMISSIONS.FILE_READ)) return [];
+  const companyFilter = buildCompanyFilter(user, 'f');
   const visibilityFilter = await buildVisibilityFilter(user, 'f', 'uploaded_by');
   const likeFilter = buildLikeFilter(terms, [
     'f.name',
@@ -426,10 +455,10 @@ const fetchLibrarySources = async (user, terms, referencedDocumentId, contentPas
   ]);
   const rows = await query(
     `${baseDocumentSelect}
-     WHERE f.status = 'active' AND ${visibilityFilter.sql}${likeFilter.sql}
+     WHERE f.status = 'active' AND ${companyFilter.sql} AND ${visibilityFilter.sql}${likeFilter.sql}
      ORDER BY f.updated_at DESC, f.id DESC
      LIMIT 30`,
-    [...visibilityFilter.params, ...likeFilter.params]
+    [...companyFilter.params, ...visibilityFilter.params, ...likeFilter.params]
   );
 
   // 正文命中但元数据未命中的资料也要纳入候选
@@ -438,9 +467,9 @@ const fetchLibrarySources = async (user, terms, referencedDocumentId, contentPas
   const passageRows = passageOnlyIds.length
     ? await query(
       `${baseDocumentSelect}
-       WHERE f.status = 'active' AND ${visibilityFilter.sql}
+       WHERE f.status = 'active' AND ${companyFilter.sql} AND ${visibilityFilter.sql}
          AND f.id IN (${passageOnlyIds.map(() => '?').join(',')})`,
-      [...visibilityFilter.params, ...passageOnlyIds]
+      [...companyFilter.params, ...visibilityFilter.params, ...passageOnlyIds]
     )
     : [];
 
@@ -727,6 +756,36 @@ exports.queryAgent = async (req, res) => {
 
     const context = normalizeAgentContext(req.body?.context);
     const referencedDocumentId = req.body?.referencedDocumentId || context.referencedDocumentId;
+
+    // 答案缓存：仅首轮提问（追问受上下文影响，不缓存）。命中则零检索零 LLM。
+    const cacheKeyParts = {
+      companyId: req.user.companyId,
+      question,
+      referencedDocumentId: toId(referencedDocumentId) || null,
+    };
+    const cacheable = !context?.isFollowup;
+    const cached = cacheable ? answerCache.get(cacheKeyParts) : null;
+    if (cached) {
+      await recordAuditLog({
+        req,
+        action: 'agent.query',
+        resourceType: 'agent_query',
+        resourceName: question.slice(0, 80),
+        generator: 'cache',
+        metadata: {
+          question,
+          generator: 'cache',
+          cached: true,
+          confidence: cached.answer.confidence,
+          sourceCount: cached.meta.sourceCount,
+        },
+      });
+      return res.json({
+        answer: cached.answer,
+        meta: { ...cached.meta, cached: true, generator: 'cache' },
+      });
+    }
+
     const questionTerms = extractTerms(question);
     const contextTerms = extractContextTerms(context);
     const terms = mergeTerms(questionTerms, contextTerms);
@@ -771,13 +830,25 @@ exports.queryAgent = async (req, res) => {
       llmLimited = usedToday >= llmDailyLimit;
     }
 
-    const llmCore = llmLimited ? null : await buildLlmAnswer({
-      question,
-      intentLabel: detectIntent(question).label,
-      sources,
-      clauses: clauseMatches,
-      context,
-      user: req.user,
+    // 检索直答：直接命中条款原文时不调模型，模板回答已足够权威且免费。
+    // 可用 AGENT_LLM_SKIP_ON_CLAUSE_HIT=false 关闭此策略。
+    const directAnswer = clauseMatches.length > 0
+      && process.env.AGENT_LLM_SKIP_ON_CLAUSE_HIT !== 'false';
+
+    let llmTimedOut = false;
+    const llmCore = (llmLimited || directAnswer) ? null : await withLlmHardTimeout(
+      buildLlmAnswer({
+        question,
+        intentLabel: detectIntent(question).label,
+        sources,
+        clauses: clauseMatches,
+        context,
+        user: req.user,
+      }),
+      getLlmHardTimeoutMs()
+    ).then((result) => {
+      llmTimedOut = result.timedOut;
+      return result.value;
     });
 
     const answer = buildAnswer({
@@ -791,6 +862,8 @@ exports.queryAgent = async (req, res) => {
     });
     if (llmLimited) {
       answer.notice = '今日 AI 生成次数已达上限，本次回答由本地资料模板生成';
+    } else if (llmTimedOut) {
+      answer.notice = '模型生成等待超时，本次回答由本地资料模板生成';
     }
 
     await recordAuditLog({
@@ -798,6 +871,10 @@ exports.queryAgent = async (req, res) => {
       action: 'agent.query',
       resourceType: 'agent_query',
       resourceName: question.slice(0, 80),
+      generator: answer.generator,
+      model: answer.generator === 'llm' ? getLlmModel() : null,
+      promptTokens: llmCore?.usage?.promptTokens ?? null,
+      completionTokens: llmCore?.usage?.completionTokens ?? null,
       metadata: {
         question,
         isFollowup: Boolean(context?.isFollowup),
@@ -811,6 +888,7 @@ exports.queryAgent = async (req, res) => {
         generator: answer.generator,
         llmUsage: llmCore?.usage || null,
         llmLimited,
+        llmTimedOut,
         sourceCount: sources.length,
         passageCount,
         sources: sources.map((source) => ({
@@ -823,20 +901,28 @@ exports.queryAgent = async (req, res) => {
       },
     });
 
+    // 缓存首轮 LLM 答案：同公司同问题下次命中即零成本
+    const responseMeta = {
+      librarySourceCount: librarySources.length,
+      privateSourceCount: privateSources.length,
+      contextSourceCount: contextLibrarySources.length + contextPrivateSources.length,
+      sourceCount: sources.length,
+      passageCount,
+      clauseCount: clauseMatches.length,
+      generator: answer.generator,
+      model: answer.generator === 'llm' ? getLlmModel() : null,
+      llmLimited,
+      llmTimedOut,
+      directAnswer,
+      llmDailyLimit: llmDailyLimit || null,
+    };
+    if (cacheable && answer.generator === 'llm') {
+      answerCache.set(cacheKeyParts, { answer, meta: responseMeta });
+    }
+
     res.json({
       answer,
-      meta: {
-        librarySourceCount: librarySources.length,
-        privateSourceCount: privateSources.length,
-        contextSourceCount: contextLibrarySources.length + contextPrivateSources.length,
-        sourceCount: sources.length,
-        passageCount,
-        clauseCount: clauseMatches.length,
-        generator: answer.generator,
-        model: answer.generator === 'llm' ? getLlmModel() : null,
-        llmLimited,
-        llmDailyLimit: llmDailyLimit || null,
-      },
+      meta: responseMeta,
     });
   } catch (err) {
     console.error('智能体检索失败:', err);
@@ -845,9 +931,10 @@ exports.queryAgent = async (req, res) => {
       action: 'agent.query',
       resourceType: 'agent_query',
       status: 'failure',
+      generator: 'failure',
       metadata: { error: err.message },
     });
-    res.status(500).json({ message: '智能体检索失败', error: err.message });
+    sendServerError(res, err, '智能体检索失败');
   }
 };
 
@@ -857,9 +944,9 @@ exports.getAgentUsageStats = async (req, res) => {
     const rows = await query(
       `SELECT DATE(created_at) AS day,
          COUNT(*) AS query_count,
-         SUM(JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.generator')) = 'llm') AS llm_count,
-         COALESCE(SUM(CAST(JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.llmUsage.promptTokens')) AS UNSIGNED)), 0) AS prompt_tokens,
-         COALESCE(SUM(CAST(JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.llmUsage.completionTokens')) AS UNSIGNED)), 0) AS completion_tokens
+         SUM(generator = 'llm') AS llm_count,
+         COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+         COALESCE(SUM(completion_tokens), 0) AS completion_tokens
        FROM audit_logs
        WHERE action = 'agent.query' AND status = 'success'
          AND created_at >= DATE_SUB(CURDATE(), INTERVAL 6 DAY)
@@ -889,7 +976,6 @@ exports.getAgentUsageStats = async (req, res) => {
       }), { queryCount: 0, llmCount: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0 }),
     });
   } catch (err) {
-    console.error('智能体用量统计失败:', err);
-    res.status(500).json({ message: '智能体用量统计失败', error: err.message });
+    sendServerError(res, err, '智能体用量统计失败');
   }
 };

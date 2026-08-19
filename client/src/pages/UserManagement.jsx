@@ -1,15 +1,21 @@
-import React, { useState, useEffect } from 'react';
-import { Table, Button, Form, Input, Select, Modal, message, Card, Switch } from 'antd';
+import React, { useState, useEffect, useMemo } from 'react';
+import { Table, Button, Form, Input, Select, Modal, message, Card, Switch, Space, Tag } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined, UnorderedListOutlined } from '@ant-design/icons';
 import axios from 'axios';
+import PageHeader from '../components/PageHeader';
 import { PERMISSIONS, hasPermission } from '../utils/permissions';
 
 const { Option } = Select;
 
 const UserManagement = ({ currentUser }) => {
+  const isPlatformAdmin = Boolean(currentUser?.isAdmin) && currentUser?.platformRole === 'super_admin';
+  const [companies, setCompanies] = useState([]);
+  const [selectedCompanyId, setSelectedCompanyId] = useState(currentUser?.companyId || null);
   const [users, setUsers] = useState([]);
   const [roles, setRoles] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [pagination, setPagination] = useState({ current: 1, pageSize: 10, total: 0 });
+  const [search, setSearch] = useState('');
   const [selectedUser, setSelectedUser] = useState(null);
   const canCreateUser = hasPermission(currentUser, PERMISSIONS.USER_CREATE);
   const canUpdateUser = hasPermission(currentUser, PERMISSIONS.USER_UPDATE);
@@ -26,13 +32,37 @@ const UserManagement = ({ currentUser }) => {
   const [createForm] = Form.useForm();
   const [editForm] = Form.useForm();
   const [roleForm] = Form.useForm();
+  const requestParams = useMemo(
+    () => (isPlatformAdmin && selectedCompanyId ? { companyId: selectedCompanyId } : {}),
+    [isPlatformAdmin, selectedCompanyId]
+  );
 
-  // 获取用户列表
-  const fetchUsers = async () => {
+  const fetchCompanies = async () => {
+    if (!isPlatformAdmin) return;
+    try {
+      const res = await axios.get('/api/companies');
+      const list = res.data.companies || [];
+      setCompanies(list);
+      setSelectedCompanyId((current) => current || list[0]?.id || null);
+    } catch (err) {
+      message.error(err.response?.data?.message || '获取公司列表失败');
+    }
+  };
+
+  // 获取用户列表（服务端分页，支持按姓名/邮箱搜索）
+  const fetchUsers = async (page = 1, pageSize = 10, keyword = search) => {
+    if (isPlatformAdmin && !selectedCompanyId) return;
     try {
       setLoading(true);
-      const res = await axios.get('/api/users');
+      const res = await axios.get('/api/users', {
+        params: { page, limit: pageSize, search: keyword || undefined, ...requestParams },
+      });
       setUsers(res.data.users || []);
+      setPagination({
+        current: res.data.currentPage || page,
+        pageSize,
+        total: res.data.totalUsers || 0,
+      });
     } catch (err) {
       message.error(err.response?.data?.message || '获取用户列表失败');
       console.error('Fetch users error:', err);
@@ -53,11 +83,15 @@ const UserManagement = ({ currentUser }) => {
   };
 
   useEffect(() => {
-    fetchUsers();
+    fetchCompanies();
+  }, [isPlatformAdmin]);
+
+  useEffect(() => {
+    fetchUsers(1, pagination.pageSize);
     if (canAssignRoles) {
       fetchRoles();
     }
-  }, [canAssignRoles]);
+  }, [canAssignRoles, selectedCompanyId]);
 
   // 打开创建用户模态框
   const showCreateModal = () => {
@@ -84,10 +118,10 @@ const UserManagement = ({ currentUser }) => {
   // 创建用户
   const handleCreateUser = async (values) => {
     try {
-      await axios.post('/api/users', values);
+      await axios.post('/api/users', { ...values, ...requestParams });
       message.success('创建用户成功');
       setCreateModalOpen(false);
-      fetchUsers();
+      fetchUsers(1, pagination.pageSize);
     } catch (err) {
       message.error(err.response?.data?.message || '创建用户失败');
       console.error('Create user error:', err);
@@ -97,7 +131,7 @@ const UserManagement = ({ currentUser }) => {
   // 编辑用户
   const handleEditUser = async (values) => {
     try {
-      await axios.put(`/api/users/${selectedUser._id}`, values);
+      await axios.put(`/api/users/${selectedUser._id}`, { ...values, ...requestParams });
       message.success('更新用户成功');
       setEditModalOpen(false);
       
@@ -121,9 +155,9 @@ const UserManagement = ({ currentUser }) => {
   // 删除用户
   const handleDeleteUser = async (userId) => {
     try {
-      await axios.delete(`/api/users/${userId}`);
+      await axios.delete(`/api/users/${userId}`, { params: requestParams });
       message.success('删除用户成功');
-      fetchUsers();
+      fetchUsers(pagination.current, pagination.pageSize);
     } catch (err) {
       message.error(err.response?.data?.message || '删除用户失败');
       console.error('Delete user error:', err);
@@ -133,10 +167,10 @@ const UserManagement = ({ currentUser }) => {
   // 分配角色
   const handleAssignRoles = async (values) => {
     try {
-      await axios.post(`/api/users/${selectedUser._id}/roles`, values);
+      await axios.post(`/api/users/${selectedUser._id}/roles`, { ...values, ...requestParams });
       message.success('分配角色成功');
       setRoleModalOpen(false);
-      fetchUsers();
+      fetchUsers(pagination.current, pagination.pageSize);
     } catch (err) {
       message.error(err.response?.data?.message || '分配角色失败');
       console.error('Assign roles error:', err);
@@ -154,6 +188,13 @@ const UserManagement = ({ currentUser }) => {
       title: '邮箱',
       dataIndex: 'email',
       key: 'email',
+    },
+    isPlatformAdmin && {
+      title: '公司',
+      dataIndex: 'companyName',
+      key: 'companyName',
+      width: 160,
+      render: (companyName) => companyName ? <Tag>{companyName}</Tag> : '-',
     },
     {
       title: '部门',
@@ -235,16 +276,46 @@ const UserManagement = ({ currentUser }) => {
   ].filter(Boolean);
 
   return (
-    <Card
-      title="用户管理"
-      extra={canCreateUser ? <Button type="primary" icon={<PlusOutlined />} onClick={showCreateModal}>创建用户</Button> : null}
-    >
+    <div>
+      <PageHeader
+        title="用户管理"
+        extra={(
+          <Space>
+            <Input.Search
+              placeholder="搜索姓名、邮箱"
+              allowClear
+              onSearch={(value) => { setSearch(value); fetchUsers(1, pagination.pageSize, value); }}
+              style={{ width: 220 }}
+            />
+            {isPlatformAdmin ? (
+              <Select
+                style={{ width: 220 }}
+                value={selectedCompanyId}
+                options={companies.map((company) => ({ label: company.name, value: company.id }))}
+                onChange={setSelectedCompanyId}
+                placeholder="选择公司"
+                showSearch
+                optionFilterProp="label"
+              />
+            ) : null}
+            {canCreateUser ? <Button type="primary" icon={<PlusOutlined />} onClick={showCreateModal}>创建用户</Button> : null}
+          </Space>
+        )}
+      />
+      <Card>
       <Table 
         columns={columns} 
         dataSource={users} 
         rowKey="_id" 
         loading={loading}
-        pagination={{ pageSize: 10 }}
+        pagination={{
+          current: pagination.current,
+          pageSize: pagination.pageSize,
+          total: pagination.total,
+          showSizeChanger: true,
+          showTotal: (total) => `共 ${total} 人`,
+        }}
+        onChange={(page) => fetchUsers(page.current, page.pageSize)}
       />
 
       {/* 创建用户模态框 */}
@@ -332,7 +403,8 @@ const UserManagement = ({ currentUser }) => {
           </Form.Item>
         </Form>
       </Modal>
-    </Card>
+      </Card>
+    </div>
   );
 };
 

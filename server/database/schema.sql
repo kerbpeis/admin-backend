@@ -27,18 +27,33 @@ CREATE TABLE IF NOT EXISTS role_permissions (
   CONSTRAINT fk_role_permissions_permission FOREIGN KEY (permission_id) REFERENCES permissions (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS companies (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  name VARCHAR(150) NOT NULL,
+  invite_code VARCHAR(64) NOT NULL,
+  email_domains JSON NULL,
+  status ENUM('active', 'disabled') NOT NULL DEFAULT 'active',
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_companies_invite_code (invite_code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS users (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  company_id BIGINT UNSIGNED NULL,
   name VARCHAR(100) NOT NULL,
   email VARCHAR(190) NOT NULL,
   password_hash VARCHAR(255) NOT NULL,
   department VARCHAR(100) NOT NULL,
   section VARCHAR(100) NOT NULL,
   is_admin TINYINT(1) NOT NULL DEFAULT 0,
+  platform_role VARCHAR(20) NOT NULL DEFAULT 'member',
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  UNIQUE KEY uk_users_email (email)
+  UNIQUE KEY uk_users_email (email),
+  KEY idx_users_company (company_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS user_roles (
@@ -51,6 +66,7 @@ CREATE TABLE IF NOT EXISTS user_roles (
 
 CREATE TABLE IF NOT EXISTS departments (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  company_id BIGINT UNSIGNED NULL,
   name VARCHAR(100) NOT NULL,
   description TEXT NULL,
   parent_department_id BIGINT UNSIGNED NULL,
@@ -60,7 +76,8 @@ CREATE TABLE IF NOT EXISTS departments (
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  UNIQUE KEY uk_departments_name (name),
+  UNIQUE KEY uk_departments_company_type_name (company_id, type, name),
+  KEY idx_departments_company (company_id),
   KEY idx_departments_parent (parent_department_id),
   CONSTRAINT fk_departments_parent FOREIGN KEY (parent_department_id) REFERENCES departments (id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -75,6 +92,7 @@ CREATE TABLE IF NOT EXISTS department_managers (
 
 CREATE TABLE IF NOT EXISTS knowledge_points (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  company_id BIGINT UNSIGNED NULL,
   name VARCHAR(200) NOT NULL,
   description TEXT NULL,
   department_id BIGINT UNSIGNED NULL,
@@ -90,6 +108,7 @@ CREATE TABLE IF NOT EXISTS knowledge_points (
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
+  KEY idx_knowledge_points_company (company_id),
   KEY idx_knowledge_points_department (department_id),
   KEY idx_knowledge_points_profession (profession_id),
   CONSTRAINT fk_knowledge_points_department FOREIGN KEY (department_id) REFERENCES departments (id) ON DELETE SET NULL,
@@ -99,6 +118,7 @@ CREATE TABLE IF NOT EXISTS knowledge_points (
 
 CREATE TABLE IF NOT EXISTS files (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  company_id BIGINT UNSIGNED NULL,
   name VARCHAR(255) NOT NULL,
   original_name VARCHAR(255) NOT NULL,
   path VARCHAR(500) NOT NULL,
@@ -127,9 +147,12 @@ CREATE TABLE IF NOT EXISTS files (
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
+  KEY idx_files_company (company_id),
   KEY idx_files_department (department_id),
   KEY idx_files_profession (profession_id),
   KEY idx_files_knowledge_point (knowledge_point_id),
+  -- 全文搜索索引（WITH PARSER ngram 支持中文分词，需 MySQL >= 5.7.6）
+  FULLTEXT KEY ft_files_search (name, description, tags) WITH PARSER ngram,
   CONSTRAINT fk_files_knowledge_point FOREIGN KEY (knowledge_point_id) REFERENCES knowledge_points (id) ON DELETE SET NULL,
   CONSTRAINT fk_files_department FOREIGN KEY (department_id) REFERENCES departments (id) ON DELETE SET NULL,
   CONSTRAINT fk_files_profession FOREIGN KEY (profession_id) REFERENCES departments (id) ON DELETE SET NULL,
@@ -197,6 +220,10 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   resource_id VARCHAR(80) NULL,
   resource_name VARCHAR(255) NULL,
   status ENUM('success', 'failure', 'denied') NOT NULL DEFAULT 'success',
+  generator VARCHAR(40) NULL,
+  model VARCHAR(100) NULL,
+  prompt_tokens INT UNSIGNED NULL,
+  completion_tokens INT UNSIGNED NULL,
   ip_address VARCHAR(80) NULL,
   user_agent VARCHAR(500) NULL,
   metadata JSON NULL,
@@ -206,6 +233,8 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   KEY idx_audit_logs_resource (resource_type, resource_id),
   KEY idx_audit_logs_action (action),
   KEY idx_audit_logs_created_at (created_at),
+  KEY idx_audit_logs_generator (actor_id, action, generator, created_at),
+  KEY idx_audit_logs_model (actor_id, action, model, created_at),
   CONSTRAINT fk_audit_logs_actor FOREIGN KEY (actor_id) REFERENCES users (id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -452,4 +481,39 @@ CREATE TABLE IF NOT EXISTS private_share_requests (
   CONSTRAINT fk_private_share_requests_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
   CONSTRAINT fk_private_share_requests_reviewer FOREIGN KEY (reviewer_id) REFERENCES users (id) ON DELETE SET NULL,
   CONSTRAINT fk_private_share_requests_promoted_file FOREIGN KEY (promoted_file_id) REFERENCES files (id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 刷题题库：company_id 为 NULL 表示平台公共题库
+CREATE TABLE IF NOT EXISTS quiz_questions (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  company_id BIGINT UNSIGNED NULL,
+  type ENUM('single', 'multi', 'judge') NOT NULL DEFAULT 'single',
+  stem TEXT NOT NULL,
+  options JSON NULL,
+  answer VARCHAR(20) NOT NULL,
+  explanation TEXT NULL,
+  source ENUM('ai', 'import', 'upload') NOT NULL DEFAULT 'upload',
+  source_ref VARCHAR(255) NULL,
+  status ENUM('active', 'disabled') NOT NULL DEFAULT 'active',
+  created_by BIGINT UNSIGNED NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_quiz_questions_company (company_id, status),
+  CONSTRAINT fk_quiz_questions_company FOREIGN KEY (company_id) REFERENCES companies (id) ON DELETE CASCADE,
+  CONSTRAINT fk_quiz_questions_creator FOREIGN KEY (created_by) REFERENCES users (id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 答题记录
+CREATE TABLE IF NOT EXISTS quiz_attempts (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  user_id BIGINT UNSIGNED NOT NULL,
+  question_id BIGINT UNSIGNED NOT NULL,
+  chosen VARCHAR(20) NOT NULL,
+  correct TINYINT NOT NULL DEFAULT 0,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_quiz_attempts_user_date (user_id, created_at),
+  KEY idx_quiz_attempts_question (question_id),
+  CONSTRAINT fk_quiz_attempts_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
+  CONSTRAINT fk_quiz_attempts_question FOREIGN KEY (question_id) REFERENCES quiz_questions (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

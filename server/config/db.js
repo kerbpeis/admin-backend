@@ -15,9 +15,21 @@ const pool = mysql.createPool({
   charset: 'utf8mb4',
 });
 
+// 连接级错误码：查询失败且属于连接问题时，将健康状态标记为断开
+const CONNECTION_ERROR_CODES = new Set(['ECONNREFUSED', 'ETIMEDOUT', 'ECONNRESET', 'EPIPE', 'PROTOCOL_CONNECTION_LOST']);
+
 const query = async (sql, params = []) => {
-  const [rows] = await pool.query(sql, params);
-  return rows;
+  try {
+    const [rows] = await pool.query(sql, params);
+    // 查询成功说明连接池已自行恢复，同步刷新健康状态
+    databaseStatus = 'connected';
+    return rows;
+  } catch (err) {
+    if (err.fatal || CONNECTION_ERROR_CODES.has(err.code)) {
+      databaseStatus = 'disconnected';
+    }
+    throw err;
+  }
 };
 
 const withTransaction = async (callback) => {

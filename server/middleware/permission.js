@@ -1,5 +1,6 @@
 const { query } = require('../config/db');
 const { toId } = require('../utils/mysqlUtils');
+const { sendServerError } = require('../utils/serverError');
 
 const checkSameSection = (user, departmentName) => departmentName && departmentName === user.section;
 
@@ -41,7 +42,7 @@ const checkFilePermission = (action) => {
 
       next();
     } catch (err) {
-      res.status(500).json({ message: '权限检查失败', error: err.message });
+      sendServerError(res, err, '权限检查失败');
     }
   };
 };
@@ -78,7 +79,7 @@ const checkKnowledgePointPermission = (action) => {
 
       next();
     } catch (err) {
-      res.status(500).json({ message: '权限检查失败', error: err.message });
+      sendServerError(res, err, '权限检查失败');
     }
   };
 };
@@ -103,7 +104,7 @@ const checkDepartmentPermission = (action) => {
 
       res.status(403).json({ message: '没有权限执行此操作', requiredAction: action });
     } catch (err) {
-      res.status(500).json({ message: '权限检查失败', error: err.message });
+      sendServerError(res, err, '权限检查失败');
     }
   };
 };

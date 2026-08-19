@@ -16,8 +16,25 @@ const {
   toggleFavorite
 } = require('../controllers/fileController');
 const { auth, requirePermission } = require('../middleware/auth');
+const { createRateLimiter } = require('../middleware/rateLimit');
 const { PERMISSIONS } = require('../utils/authorization');
 const { normalizeUploadedFileName } = require('../utils/uploadNames');
+const { verifyUploadedFileSignature } = require('../utils/fileSignature');
+
+// 上传/下载按用户限流（需在 auth 之后使用，keyFn 依赖 req.user）
+const userKey = (req) => String(req.user?.id || req.ip || 'unknown');
+const uploadLimiter = createRateLimiter({
+  windowMs: 10 * 60 * 1000,
+  max: 30,
+  keyFn: userKey,
+  message: '上传过于频繁，请稍后再试',
+});
+const downloadLimiter = createRateLimiter({
+  windowMs: 10 * 60 * 1000,
+  max: 120,
+  keyFn: userKey,
+  message: '下载过于频繁，请稍后再试',
+});
 
 // 确保上传目录存在
 const uploadDir = path.join(__dirname, '../uploads');
@@ -72,6 +89,26 @@ const upload = multer({
   limits: { fileSize: 50 * 1024 * 1024 } // 限制50MB
 });
 
+// 包装 multer，将超限/类型等上传错误返回为 JSON 而非默认 HTML 错误页
+const handleUpload = (req, res, next) => {
+  upload.single('file')(req, res, (err) => {
+    if (!err) {
+      normalizeUploadedFileName(req, res, next);
+      return;
+    }
+
+    if (err instanceof multer.MulterError) {
+      const status = err.code === 'LIMIT_FILE_SIZE' ? 413 : 400;
+      const message = err.code === 'LIMIT_FILE_SIZE'
+        ? '文件不能超过 50MB'
+        : '文件上传失败';
+      return res.status(status).json({ message, error: err.code });
+    }
+
+    return res.status(400).json({ message: err.message || '文件上传失败' });
+  });
+};
+
 // 获取文件列表
 router.get('/', auth, requirePermission(PERMISSIONS.FILE_READ), getFiles);
 
@@ -79,7 +116,7 @@ router.get('/', auth, requirePermission(PERMISSIONS.FILE_READ), getFiles);
 router.get('/:id', auth, requirePermission(PERMISSIONS.FILE_READ), getFile);
 
 // 上传文件
-router.post('/', auth, requirePermission(PERMISSIONS.FILE_CREATE), upload.single('file'), normalizeUploadedFileName, uploadFile);
+router.post('/', auth, requirePermission(PERMISSIONS.FILE_CREATE), uploadLimiter, handleUpload, verifyUploadedFileSignature, uploadFile);
 
 // 更新文件信息
 router.put('/:id', auth, requirePermission(PERMISSIONS.FILE_UPDATE), updateFile);
@@ -88,16 +125,16 @@ router.put('/:id', auth, requirePermission(PERMISSIONS.FILE_UPDATE), updateFile)
 router.delete('/:id', auth, requirePermission(PERMISSIONS.FILE_DELETE), deleteFile);
 
 // 下载文件
-router.get('/:id/download', auth, requirePermission(PERMISSIONS.FILE_READ), downloadFile);
+router.get('/:id/download', auth, requirePermission(PERMISSIONS.FILE_READ), downloadLimiter, downloadFile);
 
 // 下载文件内容
-router.get('/:id/download/:filename', auth, requirePermission(PERMISSIONS.FILE_READ), downloadFileContent);
+router.get('/:id/download/:filename', auth, requirePermission(PERMISSIONS.FILE_READ), downloadLimiter, downloadFileContent);
 
 // 获取文件版本历史
 router.get('/:id/versions', auth, requirePermission(PERMISSIONS.FILE_READ), getFileVersions);
 
 // 上传新版本
-router.post('/:id/versions', auth, requirePermission(PERMISSIONS.FILE_UPDATE), upload.single('file'), normalizeUploadedFileName, uploadNewVersion);
+router.post('/:id/versions', auth, requirePermission(PERMISSIONS.FILE_UPDATE), uploadLimiter, handleUpload, verifyUploadedFileSignature, uploadNewVersion);
 
 // 收藏/取消收藏
 router.post('/:id/favorite', auth, requirePermission(PERMISSIONS.FILE_READ), toggleFavorite);

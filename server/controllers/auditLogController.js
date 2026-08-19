@@ -1,5 +1,6 @@
 const { query } = require('../config/db');
 const { toId } = require('../utils/mysqlUtils');
+const { sendServerError } = require('../utils/serverError');
 
 const clampPageSize = (value) => {
   const parsed = Number.parseInt(value, 10);
@@ -121,7 +122,7 @@ exports.getAuditLogs = async (req, res) => {
       },
     });
   } catch (err) {
-    res.status(500).json({ message: '获取审计日志失败', error: err.message });
+    sendServerError(res, err, '获取审计日志失败');
   }
 };
 
@@ -142,6 +143,6 @@ exports.getAuditLog = async (req, res) => {
 
     res.json({ log: serializeAuditLog(rows[0]) });
   } catch (err) {
-    res.status(500).json({ message: '获取审计日志失败', error: err.message });
+    sendServerError(res, err, '获取审计日志失败');
   }
 };

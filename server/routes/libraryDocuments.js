@@ -17,10 +17,27 @@ const {
   uploadLibraryDocumentVersion,
 } = require('../controllers/libraryDocumentController');
 const { auth, requirePermission } = require('../middleware/auth');
+const { createRateLimiter } = require('../middleware/rateLimit');
 const { PERMISSIONS } = require('../utils/authorization');
 const { normalizeUploadedFileName } = require('../utils/uploadNames');
+const { verifyUploadedFileSignature } = require('../utils/fileSignature');
 
 const router = express.Router();
+
+// 上传/下载按用户限流（需在 auth 之后使用，keyFn 依赖 req.user）
+const userKey = (req) => String(req.user?.id || req.ip || 'unknown');
+const uploadLimiter = createRateLimiter({
+  windowMs: 10 * 60 * 1000,
+  max: 30,
+  keyFn: userKey,
+  message: '上传过于频繁，请稍后再试',
+});
+const downloadLimiter = createRateLimiter({
+  windowMs: 10 * 60 * 1000,
+  max: 120,
+  keyFn: userKey,
+  message: '下载过于频繁，请稍后再试',
+});
 
 const uploadDir = path.join(__dirname, '../uploads');
 if (!fs.existsSync(uploadDir)) {
@@ -94,14 +111,14 @@ const handleUpload = (req, res, next) => {
 router.get('/', auth, requirePermission(PERMISSIONS.FILE_READ), getLibraryDocuments);
 router.get('/access/me', auth, getLibraryDocumentAccess);
 router.get('/stats/overview', auth, requirePermission(PERMISSIONS.FILE_READ), getLibraryDocumentStats);
-router.post('/', auth, requirePermission(PERMISSIONS.FILE_CREATE), handleUpload, createLibraryDocument);
+router.post('/', auth, requirePermission(PERMISSIONS.FILE_CREATE), uploadLimiter, handleUpload, verifyUploadedFileSignature, createLibraryDocument);
 router.get('/:id', auth, requirePermission(PERMISSIONS.FILE_READ), getLibraryDocument);
 router.put('/:id', auth, requirePermission(PERMISSIONS.FILE_UPDATE), updateLibraryDocument);
 router.delete('/:id', auth, requirePermission(PERMISSIONS.FILE_DELETE), deleteLibraryDocument);
 router.get('/:id/capabilities', auth, requirePermission(PERMISSIONS.FILE_READ), getLibraryDocumentCapabilities);
-router.get('/:id/download', auth, requirePermission(PERMISSIONS.FILE_READ), getLibraryDocumentDownload);
-router.get('/:id/download/content', auth, requirePermission(PERMISSIONS.FILE_READ), downloadLibraryDocumentContent);
+router.get('/:id/download', auth, requirePermission(PERMISSIONS.FILE_READ), downloadLimiter, getLibraryDocumentDownload);
+router.get('/:id/download/content', auth, requirePermission(PERMISSIONS.FILE_READ), downloadLimiter, downloadLibraryDocumentContent);
 router.get('/:id/versions', auth, requirePermission(PERMISSIONS.FILE_READ), getLibraryDocumentVersions);
-router.post('/:id/versions', auth, requirePermission(PERMISSIONS.FILE_UPDATE), handleUpload, uploadLibraryDocumentVersion);
+router.post('/:id/versions', auth, requirePermission(PERMISSIONS.FILE_UPDATE), uploadLimiter, handleUpload, verifyUploadedFileSignature, uploadLibraryDocumentVersion);
 
 module.exports = router;

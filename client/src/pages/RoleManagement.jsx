@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Table, Button, Modal, Form, Input, Select, Popconfirm, message, Space, Card } from 'antd';
 import { TeamOutlined, PlusOutlined, EditOutlined, DeleteOutlined, LockOutlined, FileTextOutlined, FolderOutlined, UserOutlined } from '@ant-design/icons';
 import axios from 'axios';
+import PageHeader from '../components/PageHeader';
 import { PERMISSIONS, hasPermission } from '../utils/permissions';
 
 const { Option } = Select;
@@ -204,7 +205,8 @@ const RoleManagement = ({ currentUser }) => {
           )}
           {canDeleteRole && (
             <Popconfirm
-              title="确定要删除这个角色吗？"
+              title="删除角色"
+              description="删除后将无法恢复，确认删除该角色？"
               onConfirm={() => handleDeleteRole(record._id)}
               okText="确定"
               cancelText="取消"
@@ -225,21 +227,19 @@ const RoleManagement = ({ currentUser }) => {
 
   return (
     <div className="role-management-container">
-      <Card title="角色管理" className="content-card">
-        <div className="table-header">
-          <Space>
-            {canCreateRole && (
-              <Button 
-                type="primary" 
-                icon={<PlusOutlined />}
-                onClick={showCreateModal}
-              >
-                创建角色
-              </Button>
-            )}
-          </Space>
-        </div>
-        
+      <PageHeader
+        title="角色管理"
+        extra={canCreateRole ? (
+          <Button
+            type="primary"
+            icon={<PlusOutlined />}
+            onClick={showCreateModal}
+          >
+            创建角色
+          </Button>
+        ) : null}
+      />
+      <Card className="content-card">
         <Table
           columns={columns}
           dataSource={roles}

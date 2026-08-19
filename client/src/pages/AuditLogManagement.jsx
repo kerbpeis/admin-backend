@@ -16,6 +16,7 @@ import {
 } from 'antd';
 import { AuditOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
 import axios from 'axios';
+import PageHeader from '../components/PageHeader';
 import dayjs from 'dayjs';
 
 const { RangePicker } = DatePicker;
@@ -29,7 +30,7 @@ const actionOptions = [
   { value: 'library_document.version_list', label: '查看版本' },
   { value: 'library_document.version_upload', label: '发布版本' },
   { value: 'library_document.download_link', label: '生成下载' },
-  { value: 'library_document.download_content', label: '下载文件' },
+  { value: 'library_document.download_content', label: '下载资料' },
 ];
 
 const statusOptions = [
@@ -170,10 +171,12 @@ const AuditLogManagement = () => {
   };
 
   return (
-    <Card
-      title={<Space><AuditOutlined />审计日志</Space>}
-      extra={<Button icon={<ReloadOutlined />} onClick={() => fetchLogs()} loading={loading}>刷新</Button>}
-    >
+    <div>
+      <PageHeader
+        title="审计日志"
+        extra={<Button icon={<ReloadOutlined />} onClick={() => fetchLogs()} loading={loading}>刷新</Button>}
+      />
+      <Card>
       <Form form={filterForm} layout="inline" className="filter-form">
         <Form.Item name="resourceType" label="资源类型" initialValue="library_document">
           <Select style={{ width: 170 }} allowClear options={[{ value: 'library_document', label: '资料库资料' }]} />
@@ -242,7 +245,8 @@ const AuditLogManagement = () => {
           </Space>
         ) : null}
       </Drawer>
-    </Card>
+      </Card>
+    </div>
   );
 };
 

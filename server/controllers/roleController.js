@@ -1,5 +1,6 @@
 const { query, withTransaction, isDuplicateKeyError } = require('../config/db');
-const { serializePermission, serializeRole, toId, placeholders } = require('../utils/mysqlUtils');
+const { serializePermission, serializeRole, toId, placeholders, firstPresent } = require('../utils/mysqlUtils');
+const { sendServerError } = require('../utils/serverError');
 
 const loadPermissionsForRoles = async (roleIds) => {
   if (!roleIds.length) return new Map();
@@ -31,7 +32,7 @@ const getRoles = async (req, res) => {
       roles: roles.map((role) => serializeRole(role, permissionsByRole.get(role.id) || [])),
     });
   } catch (err) {
-    res.status(500).json({ message: '获取角色列表失败', error: err.message });
+    sendServerError(res, err, '获取角色列表失败');
   }
 };
 
@@ -73,7 +74,7 @@ const createRole = async (req, res) => {
     if (isDuplicateKeyError(err)) {
       return res.status(400).json({ message: '该角色已存在' });
     }
-    res.status(500).json({ message: '角色创建失败', error: err.message });
+    sendServerError(res, err, '角色创建失败');
   }
 };
 
@@ -88,19 +89,23 @@ const getRole = async (req, res) => {
     const permissionsByRole = await loadPermissionsForRoles([id]);
     res.json({ role: serializeRole(rows[0], permissionsByRole.get(id) || []) });
   } catch (err) {
-    res.status(500).json({ message: '获取角色信息失败', error: err.message });
+    sendServerError(res, err, '获取角色信息失败');
   }
 };
 
 const updateRole = async (req, res) => {
   try {
     const id = toId(req.params.id);
-    const { name, description = '', permissions } = req.body;
+    const { permissions } = req.body;
 
     const existing = await query('SELECT * FROM roles WHERE id = ?', [id]);
     if (!existing[0]) {
       return res.status(404).json({ message: '角色不存在' });
     }
+
+    // 未传的字段保持原值
+    const name = firstPresent(req.body, ['name'], existing[0].name);
+    const description = firstPresent(req.body, ['description'], existing[0].description);
 
     await withTransaction(async (connection) => {
       await connection.execute('UPDATE roles SET name = ?, description = ? WHERE id = ?', [name, description, id]);
@@ -120,7 +125,7 @@ const updateRole = async (req, res) => {
     if (isDuplicateKeyError(err)) {
       return res.status(400).json({ message: '该角色名已被使用' });
     }
-    res.status(500).json({ message: '角色更新失败', error: err.message });
+    sendServerError(res, err, '角色更新失败');
   }
 };
 
@@ -139,7 +144,7 @@ const deleteRole = async (req, res) => {
 
     res.json({ message: '角色删除成功' });
   } catch (err) {
-    res.status(500).json({ message: '角色删除失败', error: err.message });
+    sendServerError(res, err, '角色删除失败');
   }
 };
 
@@ -163,7 +168,7 @@ const assignPermissions = async (req, res) => {
       role: serializeRole(rows[0], permissionsByRole.get(id) || []),
     });
   } catch (err) {
-    res.status(500).json({ message: '权限分配失败', error: err.message });
+    sendServerError(res, err, '权限分配失败');
   }
 };
 

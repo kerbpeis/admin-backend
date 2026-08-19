@@ -10,7 +10,38 @@ body {
     sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background-color: #f5f5f5;
+  background-color: #F5F6F5;
+}
+
+/* 侧边栏品牌区 */
+.sider-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 48px;
+  margin: 12px 16px 4px;
+  color: #fff;
+}
+
+.sider-brand-mark {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: #0F6B5C;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.sider-brand-name {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  white-space: nowrap;
+  overflow: hidden;
 }
 
 #root {
@@ -53,6 +84,25 @@ body {
   text-align: center;
   padding: 60px 20px;
   color: #999;
+}
+
+/* 公司目录树：公司行深色底，专业行灰底加粗，科室行缩进，层级一眼可辨 */
+.directory-row-company > td {
+  background: #E4EBE8 !important;
+  font-weight: 600;
+}
+
+.directory-row-profession > td {
+  background: #F0F4F2 !important;
+  font-weight: 600;
+}
+
+.directory-row-profession .ant-typography-secondary {
+  font-weight: 400;
+}
+
+.directory-row-section > td {
+  background: #fff;
 }
 
 /* 操作按钮组 */

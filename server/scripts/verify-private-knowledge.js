@@ -1,5 +1,6 @@
 require('dotenv').config();
 const fs = require('fs/promises');
+const bcrypt = require('bcryptjs');
 const { pool, query } = require('../config/db');
 
 const API_BASE_URL = process.env.API_BASE_URL || `http://localhost:${process.env.PORT || 3001}`;
@@ -7,6 +8,12 @@ const API_BASE_URL = process.env.API_BASE_URL || `http://localhost:${process.env
 const account = {
   email: process.env.SEED_ADMIN_EMAIL || 'admin@example.com',
   password: process.env.SEED_ADMIN_PASSWORD || 'admin123',
+};
+
+// 后端禁止审核自己提交的共享申请，审核步骤需要一个独立的管理员账号
+const reviewerAccount = {
+  email: 'verify-reviewer@example.com',
+  password: 'reviewer123',
 };
 
 const request = async (endpoint, { token, expectedStatus = 200, ...options } = {}) => {
@@ -27,14 +34,27 @@ const request = async (endpoint, { token, expectedStatus = 200, ...options } = {
   return data;
 };
 
-const login = async () => {
+const login = async (credentials = account) => {
   const data = await request('/api/auth/login', {
     method: 'POST',
     expectedStatus: 200,
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(account),
+    body: JSON.stringify(credentials),
   });
   return data.token;
+};
+
+// 幂等创建审核人账号（与提交人同公司、平台管理员）
+const ensureReviewer = async (submitterEmail) => {
+  const [submitter] = await query('SELECT id, company_id FROM users WHERE email = ? LIMIT 1', [submitterEmail]);
+  const [existing] = await query('SELECT id FROM users WHERE email = ? LIMIT 1', [reviewerAccount.email]);
+  if (existing?.id) return;
+  const passwordHash = await bcrypt.hash(reviewerAccount.password, 12);
+  await query(
+    `INSERT INTO users (company_id, name, email, password_hash, department, section, is_admin, platform_role)
+     VALUES (?, ?, ?, ?, ?, ?, 1, 'super_admin')`,
+    [submitter.company_id, '验证审核员', reviewerAccount.email, passwordHash, '生产技术', '采煤管理室']
+  );
 };
 
 const assert = (condition, message) => {
@@ -53,6 +73,8 @@ const cleanupPromotedDocuments = async () => {
 
 const main = async () => {
   const token = await login();
+  await ensureReviewer(account.email);
+  const reviewerToken = await login(reviewerAccount);
   const [currentUser] = await query('SELECT id FROM users WHERE email = ? LIMIT 1', [account.email]);
   assert(currentUser?.id, '验证账号不存在');
   const before = await request('/api/private-knowledge', { token });
@@ -271,7 +293,7 @@ const main = async () => {
 
     const shareApproved = await request(`/api/private-knowledge/share-requests/${shareCreated.shareRequest.id}`, {
       method: 'PATCH',
-      token,
+      token: reviewerToken,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status: 'approved', reviewNote: '验证审核通过并进入资料库' }),
     });
