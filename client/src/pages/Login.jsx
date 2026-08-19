@@ -67,7 +67,15 @@ const Login = ({ onLoginSuccess }) => {
               label="密码"
               rules={[
                 { required: true, message: '请输入密码' },
-                { min: 6, message: '密码长度不能少于6个字符' }
+                { min: 8, message: '密码不能少于 8 位' },
+                () => ({
+                  validator(_, value) {
+                    if (!value || (value.length >= 8 && /[a-zA-Z]/.test(value) && /[0-9]/.test(value))) {
+                      return Promise.resolve();
+                    }
+                    return Promise.reject(new Error('密码必须同时包含字母和数字'));
+                  },
+                }),
               ]}
             >
               <Input.Password
