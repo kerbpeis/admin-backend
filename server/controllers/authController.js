@@ -5,10 +5,24 @@ const { serializePermission, serializeRole, serializeUser } = require('../utils/
 const { sendServerError } = require('../utils/serverError');
 const { validateFields } = require('../utils/validation');
 
+const crypto = require('crypto');
+
 const DEFAULT_TOKEN_EXPIRES_IN = '7d';
-const DEV_JWT_SECRET = 'dev_jwt_secret_change_me';
 
 let devSecretWarned = false;
+let devSecretCache = null;
+
+// 为开发环境生成一个基于项目路径的稳定随机密钥，避免硬编码固定密钥。
+// 同一项目、同一机器重启后密钥不变，不同项目或不同机器密钥不同。
+const getStableDevJwtSecret = () => {
+  if (devSecretCache) return devSecretCache;
+  const projectPath = process.cwd();
+  devSecretCache = crypto
+    .createHmac('sha256', 'admin-backend-dev-stable-salt')
+    .update(projectPath)
+    .digest('hex');
+  return devSecretCache;
+};
 
 const getJwtSecret = () => {
   if (process.env.JWT_SECRET) return process.env.JWT_SECRET;
@@ -17,9 +31,9 @@ const getJwtSecret = () => {
   }
   if (!devSecretWarned) {
     devSecretWarned = true;
-    console.warn('未配置 JWT_SECRET，正在使用开发默认密钥，请勿用于生产环境');
+    console.warn('未配置 JWT_SECRET，正在使用基于项目路径生成的开发密钥，请勿用于生产环境');
   }
-  return DEV_JWT_SECRET;
+  return getStableDevJwtSecret();
 };
 
 const generateToken = (userId) => jwt.sign(

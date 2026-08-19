@@ -1,5 +1,5 @@
 const express = require('express');
-const { connectDB, getDatabaseStatus, pool } = require('./config/db');
+const { connectDB, getDatabaseStatus, pool, requireDatabase } = require('./config/db');
 const cors = require('cors');
 const helmet = require('helmet');
 const compression = require('compression');
@@ -37,6 +37,9 @@ app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 // 上传文件必须通过 /api/files/:id/download 鉴权下载，不公开暴露 uploads 目录。
+
+// 数据库连接检查：所有 /api 路由在数据库不可用时直接返回 503
+app.use('/api', requireDatabase);
 
 // 配置路由
 app.use('/api/auth', require('./routes/auth'));

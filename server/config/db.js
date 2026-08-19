@@ -63,6 +63,14 @@ const connectDB = async () => {
 
 const getDatabaseStatus = () => databaseStatus;
 
+// 数据库连接检查中间件：未连接时直接返回 503，避免落到 controller 产生 500
+const requireDatabase = (req, res, next) => {
+  if (databaseStatus !== 'connected') {
+    return res.status(503).json({ message: '数据库服务暂不可用，请稍后重试' });
+  }
+  next();
+};
+
 const isDuplicateKeyError = (error) => error && error.code === 'ER_DUP_ENTRY';
 
 module.exports = {
@@ -71,5 +79,6 @@ module.exports = {
   withTransaction,
   connectDB,
   getDatabaseStatus,
+  requireDatabase,
   isDuplicateKeyError,
 };
