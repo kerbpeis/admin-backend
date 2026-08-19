@@ -141,7 +141,8 @@ const DirectoryManagement = ({ currentUser }) => {
     try {
       setLoading(true);
       const res = await axios.get('/api/departments', { params: requestParams });
-      setDepartments(Array.isArray(res.data) ? res.data : []);
+      const list = Array.isArray(res.data) ? res.data : (res.data?.departments || []);
+      setDepartments(list);
     } catch (err) {
       message.error(err.response?.data?.message || '获取公司目录失败');
     } finally {
