@@ -93,7 +93,7 @@ const getDepartments = async (req, res) => {
       params.push(toId(req.query.parentDepartment));
     }
 
-    const { page, limit } = parsePageAndLimit(req.query, 1000, 1000);
+    const { page, limit } = parsePageAndLimit(req.query, 100, 100);
     const offset = (page - 1) * limit;
 
     const where = `WHERE ${filters.join(' AND ')}`;

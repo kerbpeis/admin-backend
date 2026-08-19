@@ -25,7 +25,7 @@ const loadPermissionsForRoles = async (roleIds) => {
 
 const getRoles = async (req, res) => {
   try {
-    const { page, limit } = parsePageAndLimit(req.query, 1000, 1000);
+    const { page, limit } = parsePageAndLimit(req.query, 100, 100);
     const offset = (page - 1) * limit;
 
     const countRows = await query('SELECT COUNT(*) AS total FROM roles');

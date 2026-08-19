@@ -59,35 +59,37 @@ const storage = multer.diskStorage({
   }
 });
 
-// 文件过滤器：支持 Tika 可解析的 Office / PDF / 文本 / 网页 / RTF 等格式
-const fileFilter = (req, file, cb) => {
-  const allowedTypes = [
-    'application/pdf',
-    'application/msword',
-    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    'application/vnd.ms-excel',
-    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    'application/vnd.ms-powerpoint',
-    'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-    'application/rtf',
-    'text/rtf',
-    'text/html',
-    'text/plain',
-    'text/markdown',
-    'application/json',
-    'application/xml',
-    'text/xml',
-    'text/csv',
-    'image/jpeg',
-    'image/png',
-    'image/gif',
-  ];
+// 文件过滤器：支持 Tika 可解析的 Office / PDF / 文本 / 网页 / RTF 等文档格式
+// 同时校验 MIME 类型与扩展名是否匹配，防止恶意伪装文件
+const allowedTypes = [
+  { mime: 'application/pdf', exts: ['.pdf'] },
+  { mime: 'application/msword', exts: ['.doc'] },
+  { mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', exts: ['.docx'] },
+  { mime: 'application/vnd.ms-excel', exts: ['.xls'] },
+  { mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', exts: ['.xlsx'] },
+  { mime: 'application/vnd.ms-powerpoint', exts: ['.ppt'] },
+  { mime: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', exts: ['.pptx'] },
+  { mime: 'application/rtf', exts: ['.rtf'] },
+  { mime: 'text/rtf', exts: ['.rtf'] },
+  { mime: 'text/html', exts: ['.html', '.htm'] },
+  { mime: 'text/plain', exts: ['.txt'] },
+  { mime: 'text/markdown', exts: ['.md', '.markdown'] },
+  { mime: 'application/json', exts: ['.json'] },
+  { mime: 'application/xml', exts: ['.xml'] },
+  { mime: 'text/xml', exts: ['.xml'] },
+  { mime: 'text/csv', exts: ['.csv'] },
+];
 
-  if (allowedTypes.includes(file.mimetype)) {
-    cb(null, true);
-  } else {
-    cb(new Error('不支持的文件类型'), false);
+const fileFilter = (req, file, cb) => {
+  const entry = allowedTypes.find((t) => t.mime === file.mimetype);
+  if (!entry) {
+    return cb(new Error('不支持的文件类型'), false);
   }
+  const ext = path.extname(file.originalname).toLowerCase();
+  if (!entry.exts.includes(ext)) {
+    return cb(new Error('文件扩展名与类型不匹配'), false);
+  }
+  cb(null, true);
 };
 
 const upload = multer({ 
