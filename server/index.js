@@ -38,6 +38,17 @@ app.use(express.urlencoded({ extended: true }));
 
 // 上传文件必须通过 /api/files/:id/download 鉴权下载，不公开暴露 uploads 目录。
 
+// 请求响应时间日志：便于排查慢接口和高频请求
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on('finish', () => {
+    const duration = Date.now() - start;
+    const contentLength = res.getHeader('content-length') || '-';
+    console.log(`${req.method} ${req.originalUrl} ${res.statusCode} ${duration}ms ${contentLength}b`);
+  });
+  next();
+});
+
 // 数据库连接检查：所有 /api 路由在数据库不可用时直接返回 503
 app.use('/api', requireDatabase);
 
