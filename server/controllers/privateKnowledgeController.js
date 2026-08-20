@@ -518,15 +518,21 @@ const readPrivateWorkspace = async (userId) => {
 };
 
 const readAgentInteractions = async (userId, options = {}) => {
+  const page = Math.max(Number(options.page) || 1, 1);
   const limit = Math.min(Math.max(Number(options.limit) || MAX_AGENT_INTERACTIONS, 1), MAX_AGENT_INTERACTIONS);
+  const offset = (page - 1) * limit;
+
+  const countRows = await query('SELECT COUNT(*) AS total FROM agent_interactions WHERE user_id = ?', [userId]);
+  const total = countRows[0]?.total || 0;
+
   const rows = await query(
     `SELECT * FROM agent_interactions
      WHERE user_id = ?
      ORDER BY COALESCE(source_created_at, created_at) DESC, local_id ASC
-     LIMIT ?`,
-    [userId, limit]
+     LIMIT ? OFFSET ?`,
+    [userId, limit, offset]
   );
-  return rows.map(serializeAgentInteraction);
+  return { interactions: rows.map(serializeAgentInteraction), total };
 };
 
 const readLearningProgress = async (userId, options = {}) => {
@@ -1271,10 +1277,17 @@ exports.updateShareRequest = async (req, res) => {
 
 exports.getAgentInteractions = async (req, res) => {
   try {
-    const interactions = await readAgentInteractions(req.user.id, {
-      limit: req.query.limit,
+    const page = Math.max(Number(req.query.page) || 1, 1);
+    const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100);
+    const { interactions, total } = await readAgentInteractions(req.user.id, { page, limit });
+    res.json({
+      interactions,
+      pagination: {
+        current: page,
+        pages: Math.ceil(total / limit),
+        total,
+      },
     });
-    res.json({ interactions });
   } catch (err) {
     sendServerError(res, err, '读取智能体历史失败');
   }
@@ -1324,7 +1337,7 @@ exports.createAgentInteraction = async (req, res) => {
       ]
     );
 
-    const interactions = await readAgentInteractions(req.user.id);
+    const { interactions } = await readAgentInteractions(req.user.id);
     const saved = interactions.find((item) => item.id === localId) || interactions[0];
     res.status(201).json({ message: '智能体历史已保存', interaction: saved, interactions });
   } catch (err) {

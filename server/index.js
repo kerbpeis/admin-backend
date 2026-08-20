@@ -21,7 +21,19 @@ if (process.env.TRUST_PROXY === 'true') {
 }
 
 // 安全响应头与响应压缩
-app.use(helmet());
+// 开发环境关闭 CSP，避免 Vite HMR / 内联脚本被拦截；生产环境启用宽松 CSP
+app.use(helmet({
+  contentSecurityPolicy: isProduction ? {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", 'data:', 'https:'],
+      fontSrc: ["'self'", 'data:'],
+      connectSrc: ["'self'"],
+    },
+  } : false,
+}));
 app.use(compression());
 
 // CORS 白名单：CORS_ORIGINS 逗号分隔；未配置时开发环境放行全部，生产环境拒绝跨域
