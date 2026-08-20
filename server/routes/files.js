@@ -19,7 +19,7 @@ const { auth, requirePermission } = require('../middleware/auth');
 const { createRateLimiter } = require('../middleware/rateLimit');
 const { PERMISSIONS } = require('../utils/authorization');
 const { normalizeUploadedFileName } = require('../utils/uploadNames');
-const { verifyUploadedFileSignature } = require('../utils/fileSignature');
+const { verifyUploadedFileSignature, ALLOWED_MIME_EXTENSIONS } = require('../utils/fileSignature');
 
 // 上传/下载按用户限流（需在 auth 之后使用，keyFn 依赖 req.user）
 const userKey = (req) => String(req.user?.id || req.ip || 'unknown');
@@ -61,32 +61,13 @@ const storage = multer.diskStorage({
 
 // 文件过滤器：支持 Tika 可解析的 Office / PDF / 文本 / 网页 / RTF 等文档格式
 // 同时校验 MIME 类型与扩展名是否匹配，防止恶意伪装文件
-const allowedTypes = [
-  { mime: 'application/pdf', exts: ['.pdf'] },
-  { mime: 'application/msword', exts: ['.doc'] },
-  { mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', exts: ['.docx'] },
-  { mime: 'application/vnd.ms-excel', exts: ['.xls'] },
-  { mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', exts: ['.xlsx'] },
-  { mime: 'application/vnd.ms-powerpoint', exts: ['.ppt'] },
-  { mime: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', exts: ['.pptx'] },
-  { mime: 'application/rtf', exts: ['.rtf'] },
-  { mime: 'text/rtf', exts: ['.rtf'] },
-  { mime: 'text/html', exts: ['.html', '.htm'] },
-  { mime: 'text/plain', exts: ['.txt'] },
-  { mime: 'text/markdown', exts: ['.md', '.markdown'] },
-  { mime: 'application/json', exts: ['.json'] },
-  { mime: 'application/xml', exts: ['.xml'] },
-  { mime: 'text/xml', exts: ['.xml'] },
-  { mime: 'text/csv', exts: ['.csv'] },
-];
-
 const fileFilter = (req, file, cb) => {
-  const entry = allowedTypes.find((t) => t.mime === file.mimetype);
-  if (!entry) {
+  const exts = ALLOWED_MIME_EXTENSIONS[file.mimetype];
+  if (!exts) {
     return cb(new Error('不支持的文件类型'), false);
   }
   const ext = path.extname(file.originalname).toLowerCase();
-  if (!entry.exts.includes(ext)) {
+  if (!exts.includes(ext)) {
     return cb(new Error('文件扩展名与类型不匹配'), false);
   }
   cb(null, true);

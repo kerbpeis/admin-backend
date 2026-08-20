@@ -111,6 +111,7 @@ CREATE TABLE IF NOT EXISTS knowledge_points (
   KEY idx_knowledge_points_company (company_id),
   KEY idx_knowledge_points_department (department_id),
   KEY idx_knowledge_points_profession (profession_id),
+  KEY idx_knowledge_points_creator (created_by),
   CONSTRAINT fk_knowledge_points_department FOREIGN KEY (department_id) REFERENCES departments (id) ON DELETE SET NULL,
   CONSTRAINT fk_knowledge_points_profession FOREIGN KEY (profession_id) REFERENCES departments (id) ON DELETE SET NULL,
   CONSTRAINT fk_knowledge_points_creator FOREIGN KEY (created_by) REFERENCES users (id) ON DELETE RESTRICT
@@ -151,6 +152,8 @@ CREATE TABLE IF NOT EXISTS files (
   KEY idx_files_department (department_id),
   KEY idx_files_profession (profession_id),
   KEY idx_files_knowledge_point (knowledge_point_id),
+  KEY idx_files_uploader_status (uploaded_by, status),
+  KEY idx_files_status_company (status, company_id),
   -- 全文搜索索引（WITH PARSER ngram 支持中文分词，需 MySQL >= 5.7.6）
   FULLTEXT KEY ft_files_search (name, description, tags) WITH PARSER ngram,
   CONSTRAINT fk_files_knowledge_point FOREIGN KEY (knowledge_point_id) REFERENCES knowledge_points (id) ON DELETE SET NULL,
@@ -479,6 +482,7 @@ CREATE TABLE IF NOT EXISTS private_share_requests (
   KEY idx_private_share_requests_user (user_id, status, created_at),
   KEY idx_private_share_requests_status (status, created_at),
   KEY idx_private_share_requests_reviewer (reviewer_id, reviewed_at),
+  KEY idx_private_share_requests_reviewer_status (reviewer_id, status, created_at),
   KEY idx_private_share_requests_promoted (promoted_file_id),
   CONSTRAINT fk_private_share_requests_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
   CONSTRAINT fk_private_share_requests_reviewer FOREIGN KEY (reviewer_id) REFERENCES users (id) ON DELETE SET NULL,

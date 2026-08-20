@@ -1,11 +1,36 @@
 const fs = require('fs');
+const path = require('path');
+
+// 允许上传的 MIME 类型与对应扩展名映射（单一来源，避免 routes/files.js 与这里不一致）
+const ALLOWED_MIME_EXTENSIONS = {
+  'application/pdf': ['.pdf'],
+  'application/msword': ['.doc'],
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'],
+  'application/vnd.ms-excel': ['.xls'],
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'],
+  'application/vnd.ms-powerpoint': ['.ppt'],
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation': ['.pptx'],
+  'application/rtf': ['.rtf'],
+  'text/rtf': ['.rtf'],
+  'text/html': ['.html', '.htm'],
+  'text/plain': ['.txt'],
+  'text/markdown': ['.md', '.markdown'],
+  'application/json': ['.json'],
+  'application/xml': ['.xml'],
+  'text/xml': ['.xml'],
+  'text/csv': ['.csv'],
+};
+
+const isAllowedMimeAndExt = (mimeType, filename) => {
+  const exts = ALLOWED_MIME_EXTENSIONS[mimeType];
+  if (!exts) return false;
+  const ext = path.extname(filename || '').toLowerCase();
+  return exts.includes(ext);
+};
 
 // 常见类型的魔数（文件头签名），用于校验上传文件的真实内容
 const SIGNATURES = [
   { mimes: ['application/pdf'], bytes: [0x25, 0x50, 0x44, 0x46] }, // %PDF
-  { mimes: ['image/png'], bytes: [0x89, 0x50, 0x4e, 0x47] },
-  { mimes: ['image/jpeg'], bytes: [0xff, 0xd8, 0xff] },
-  { mimes: ['image/gif'], bytes: [0x47, 0x49, 0x46, 0x38] }, // GIF8
   {
     // Office Open XML（docx/xlsx/pptx）本质是 zip 包
     mimes: [
@@ -40,12 +65,20 @@ const verifyUploadedFileSignature = async (req, res, next) => {
   if (!req.file) return next();
 
   try {
+    const { mimetype, originalname } = req.file;
+
+    // 二次校验 MIME 与扩展名是否匹配（单一来源）
+    if (!isAllowedMimeAndExt(mimetype, originalname)) {
+      deleteUploadedFile(req.file);
+      return res.status(400).json({ message: '文件扩展名与声明类型不匹配' });
+    }
+
     const fd = await fs.promises.open(req.file.path, 'r');
     const header = Buffer.alloc(8);
     await fd.read(header, 0, 8, 0);
     await fd.close();
 
-    if (!matchesSignature(header, req.file.mimetype)) {
+    if (!matchesSignature(header, mimetype)) {
       deleteUploadedFile(req.file);
       return res.status(400).json({ message: '文件内容与声明的类型不符' });
     }
@@ -56,4 +89,8 @@ const verifyUploadedFileSignature = async (req, res, next) => {
   }
 };
 
-module.exports = { verifyUploadedFileSignature };
+module.exports = {
+  verifyUploadedFileSignature,
+  ALLOWED_MIME_EXTENSIONS,
+  isAllowedMimeAndExt,
+};

@@ -76,6 +76,12 @@ const runMigrations = async (connection) => {
   await dropIndexIfExists(connection, 'departments', 'uk_departments_name');
   await dropIndexIfExists(connection, 'departments', 'uk_departments_company_name');
   await ensureIndex(connection, 'departments', 'uk_departments_company_type_name', 'UNIQUE KEY uk_departments_company_type_name (company_id, type, name)');
+
+  // 常用列表/过滤查询索引优化
+  await ensureIndex(connection, 'files', 'idx_files_uploader_status', 'KEY idx_files_uploader_status (uploaded_by, status)');
+  await ensureIndex(connection, 'files', 'idx_files_status_company', 'KEY idx_files_status_company (status, company_id)');
+  await ensureIndex(connection, 'knowledge_points', 'idx_knowledge_points_creator', 'KEY idx_knowledge_points_creator (created_by)');
+  await ensureIndex(connection, 'private_share_requests', 'idx_private_share_requests_reviewer_status', 'KEY idx_private_share_requests_reviewer_status (reviewer_id, status, created_at)');
 };
 
 const run = async () => {
