@@ -4,6 +4,7 @@ const cors = require('cors');
 const helmet = require('helmet');
 const compression = require('compression');
 const { sanitize } = require('./utils/sanitizeLog');
+const { createRateLimiter } = require('./middleware/rateLimit');
 require('dotenv').config();
 
 const app = express();
@@ -46,8 +47,9 @@ app.use(cors({
 }));
 
 // 配置中间件
-app.use(express.json({ limit: '5mb' }));
-app.use(express.urlencoded({ extended: true }));
+// JSON / URL 编码请求体限制 1MB；文件上传走 multer，不经过此处
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
 // 上传文件必须通过 /api/files/:id/download 鉴权下载，不公开暴露 uploads 目录。
 
@@ -69,6 +71,14 @@ app.use((req, res, next) => {
 
 // 数据库连接检查：所有 /api 路由在数据库不可用时直接返回 503
 app.use('/api', requireDatabase);
+
+// 全局 burst 限流：同一 IP 1 分钟内最多 300 个请求，防止接口被刷
+const globalRateLimiter = createRateLimiter({
+  windowMs: 60 * 1000,
+  max: 300,
+  message: '请求过于频繁，请稍后再试',
+});
+app.use('/api', globalRateLimiter);
 
 // 配置路由
 app.use('/api/auth', require('./routes/auth'));

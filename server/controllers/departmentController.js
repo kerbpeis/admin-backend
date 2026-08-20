@@ -285,6 +285,12 @@ const updateDepartment = async (req, res) => {
     if (managers !== undefined && !Array.isArray(managers)) {
       return res.status(400).json({ message: '负责人列表必须是数组', field: 'managers' });
     }
+    if (order !== undefined && (Number.isNaN(Number(order)) || !Number.isFinite(Number(order)))) {
+      return res.status(400).json({ message: '排序值必须是数字', field: 'order' });
+    }
+    if (isActive !== undefined && typeof isActive !== 'boolean' && isActive !== 0 && isActive !== 1) {
+      return res.status(400).json({ message: 'isActive 必须是布尔值', field: 'isActive' });
+    }
     const companyId = getScopedCompanyId(req.user, req.body.companyId || req.query.companyId);
 
     const existing = await query(

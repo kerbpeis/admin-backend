@@ -246,8 +246,20 @@ exports.createKnowledgePoint = async (req, res) => {
       icon = 'book-open-variant',
     } = req.body;
 
-    if (!name) {
+    if (!name || String(name).trim().length === 0) {
       return res.status(400).json({ message: '请输入知识点名称' });
+    }
+    if (String(name).length > 200) {
+      return res.status(400).json({ message: '知识点名称不能超过 200 个字符', field: 'name' });
+    }
+    if (description && String(description).length > 5000) {
+      return res.status(400).json({ message: '描述不能超过 5000 个字符', field: 'description' });
+    }
+    if (category && String(category).length > 100) {
+      return res.status(400).json({ message: '分类不能超过 100 个字符', field: 'category' });
+    }
+    if (icon && String(icon).length > 80) {
+      return res.status(400).json({ message: '图标标识不能超过 80 个字符', field: 'icon' });
     }
 
     const visibilityCheck = ensureWritableVisibility(req.user, visibility);
@@ -300,9 +312,24 @@ exports.updateKnowledgePoint = async (req, res) => {
     }
 
     const { name, tags, visibility, icon } = req.body;
+    if (name !== undefined && String(name).trim().length === 0) {
+      return res.status(400).json({ message: '知识点名称不能为空', field: 'name' });
+    }
+    if (name && String(name).length > 200) {
+      return res.status(400).json({ message: '知识点名称不能超过 200 个字符', field: 'name' });
+    }
     // 未传 description/category 时保持原值，避免被默认空串清空
     const description = firstPresent(req.body, ['description'], knowledgePoint.description);
     const category = firstPresent(req.body, ['category'], knowledgePoint.category);
+    if (description && String(description).length > 5000) {
+      return res.status(400).json({ message: '描述不能超过 5000 个字符', field: 'description' });
+    }
+    if (category && String(category).length > 100) {
+      return res.status(400).json({ message: '分类不能超过 100 个字符', field: 'category' });
+    }
+    if (icon && String(icon).length > 80) {
+      return res.status(400).json({ message: '图标标识不能超过 80 个字符', field: 'icon' });
+    }
     const visibilityCheck = ensureWritableVisibility(req.user, visibility || knowledgePoint.visibility);
     if (!visibilityCheck.ok) {
       return res.status(403).json({ message: visibilityCheck.message });
