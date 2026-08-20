@@ -536,7 +536,9 @@ const readAgentInteractions = async (userId, options = {}) => {
 };
 
 const readLearningProgress = async (userId, options = {}) => {
+  const page = Math.max(Number(options.page) || 1, 1);
   const limit = Math.min(Math.max(Number(options.limit) || MAX_LEARNING_PROGRESS, 1), MAX_LEARNING_PROGRESS);
+  const offset = (page - 1) * limit;
   const status = LEARNING_STATUSES.has(String(options.status || '')) ? String(options.status) : null;
   const reviewDue = ['1', 'true', 'yes'].includes(String(options.reviewDue || '').toLowerCase());
   const where = ['user_id = ?'];
@@ -551,6 +553,12 @@ const readLearningProgress = async (userId, options = {}) => {
     where.push("(status = 'review_due' OR (status = 'completed' AND review_at IS NOT NULL AND review_at <= CURRENT_TIMESTAMP))");
   }
 
+  const countRows = await query(
+    `SELECT COUNT(*) AS total FROM private_learning_progress WHERE ${where.join(' AND ')}`,
+    params
+  );
+  const total = countRows[0]?.total || 0;
+
   const rows = await query(
     `SELECT * FROM private_learning_progress
      WHERE ${where.join(' AND ')}
@@ -564,14 +572,28 @@ const readLearningProgress = async (userId, options = {}) => {
        END,
        COALESCE(review_at, due_at, updated_at) ASC,
        updated_at DESC
-     LIMIT ?`,
-    [...params, limit]
+     LIMIT ? OFFSET ?`,
+    [...params, limit, offset]
   );
-  return rows.map(serializeLearningProgress);
+  return { progress: rows.map(serializeLearningProgress), total };
 };
 
 const readDownloadHistory = async (userId, options = {}) => {
+  const page = Math.max(Number(options.page) || 1, 1);
   const limit = Math.min(Math.max(Number(options.limit) || MAX_DOWNLOAD_HISTORY, 1), MAX_DOWNLOAD_HISTORY);
+  const offset = (page - 1) * limit;
+
+  const countRows = await query(
+    `SELECT COUNT(*) AS total
+     FROM audit_logs al
+     WHERE al.actor_id = ?
+       AND al.resource_type = 'library_document'
+       AND al.action = 'library_document.download_content'
+       AND al.status = 'success'`,
+    [userId]
+  );
+  const total = countRows[0]?.total || 0;
+
   const rows = await query(
     `SELECT al.*, f.name AS document_name, f.original_name, f.category, f.version_label
      FROM audit_logs al
@@ -581,14 +603,26 @@ const readDownloadHistory = async (userId, options = {}) => {
        AND al.action = 'library_document.download_content'
        AND al.status = 'success'
      ORDER BY al.created_at DESC, al.id DESC
-     LIMIT ?`,
-    [userId, limit]
+     LIMIT ? OFFSET ?`,
+    [userId, limit, offset]
   );
-  return rows.map(serializeDownloadRecord);
+  return { downloads: rows.map(serializeDownloadRecord), total };
 };
 
 const readActivityHistory = async (userId, options = {}) => {
+  const page = Math.max(Number(options.page) || 1, 1);
   const limit = Math.min(Math.max(Number(options.limit) || MAX_ACTIVITY_HISTORY, 1), MAX_ACTIVITY_HISTORY);
+  const offset = (page - 1) * limit;
+
+  const countRows = await query(
+    `SELECT COUNT(*) AS total
+     FROM audit_logs al
+     WHERE al.actor_id = ?
+       AND al.action <> 'library_document.download_link'`,
+    [userId]
+  );
+  const total = countRows[0]?.total || 0;
+
   const rows = await query(
     `SELECT al.*, f.name AS document_name, f.category, f.version_label
      FROM audit_logs al
@@ -596,10 +630,10 @@ const readActivityHistory = async (userId, options = {}) => {
      WHERE al.actor_id = ?
        AND al.action <> 'library_document.download_link'
      ORDER BY al.created_at DESC, al.id DESC
-     LIMIT ?`,
-    [userId, limit]
+     LIMIT ? OFFSET ?`,
+    [userId, limit, offset]
   );
-  return rows.map(serializeActivityRecord);
+  return { activities: rows.map(serializeActivityRecord), total };
 };
 
 const normalizeLearningProgress = (progress = {}, fallbackDocumentId = null) => {
@@ -676,7 +710,9 @@ const readPrivateShareRequests = async (user, options = {}) => {
   const status = SHARE_REQUEST_STATUSES.has(String(options.status || '')) ? String(options.status) : null;
   const canReview = canReviewShareRequests(user);
   const reviewScope = options.scope === 'review' && canReview;
+  const page = Math.max(Number(options.page) || 1, 1);
   const limit = Math.min(Math.max(Number(options.limit) || 50, 1), 100);
+  const offset = (page - 1) * limit;
   const companyId = getScopedCompanyId(user, options.companyId);
 
   const where = reviewScope ? ['1 = 1'] : ['psr.user_id = ?'];
@@ -690,6 +726,14 @@ const readPrivateShareRequests = async (user, options = {}) => {
     params.push(status);
   }
 
+  const countRows = await query(
+    `SELECT COUNT(*) AS total FROM private_share_requests psr
+     LEFT JOIN users requester ON requester.id = psr.user_id
+     WHERE ${where.join(' AND ')}`,
+    params
+  );
+  const total = countRows[0]?.total || 0;
+
   const rows = await query(
     `SELECT psr.*,
        requester.name AS requester_name,
@@ -702,10 +746,10 @@ const readPrivateShareRequests = async (user, options = {}) => {
      LEFT JOIN users reviewer ON reviewer.id = psr.reviewer_id
      WHERE ${where.join(' AND ')}
      ORDER BY psr.created_at DESC, psr.id DESC
-     LIMIT ?`,
-    [...params, limit]
+     LIMIT ? OFFSET ?`,
+    [...params, limit, offset]
   );
-  return rows.map(serializeShareRequest);
+  return { shareRequests: rows.map(serializeShareRequest), total };
 };
 
 const findPrivateKnowledgeItemSnapshot = async (userId, privateItemId) => {
@@ -962,12 +1006,22 @@ exports.saveReadingHistory = async (req, res) => {
 
 exports.getLearningProgress = async (req, res) => {
   try {
-    const progress = await readLearningProgress(req.user.id, {
+    const page = Math.max(Number(req.query.page) || 1, 1);
+    const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100);
+    const { progress, total } = await readLearningProgress(req.user.id, {
       status: req.query.status,
       reviewDue: req.query.reviewDue,
-      limit: req.query.limit,
+      page,
+      limit,
     });
-    res.json({ progress });
+    res.json({
+      progress,
+      pagination: {
+        current: page,
+        pages: Math.ceil(total / limit),
+        total,
+      },
+    });
   } catch (err) {
     sendServerError(res, err, '读取学习进度失败');
   }
@@ -975,10 +1029,17 @@ exports.getLearningProgress = async (req, res) => {
 
 exports.getDownloadHistory = async (req, res) => {
   try {
-    const downloads = await readDownloadHistory(req.user.id, {
-      limit: req.query.limit,
+    const page = Math.max(Number(req.query.page) || 1, 1);
+    const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100);
+    const { downloads, total } = await readDownloadHistory(req.user.id, { page, limit });
+    res.json({
+      downloads,
+      pagination: {
+        current: page,
+        pages: Math.ceil(total / limit),
+        total,
+      },
     });
-    res.json({ downloads });
   } catch (err) {
     sendServerError(res, err, '读取下载历史失败');
   }
@@ -986,10 +1047,17 @@ exports.getDownloadHistory = async (req, res) => {
 
 exports.getActivityHistory = async (req, res) => {
   try {
-    const activities = await readActivityHistory(req.user.id, {
-      limit: req.query.limit,
+    const page = Math.max(Number(req.query.page) || 1, 1);
+    const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100);
+    const { activities, total } = await readActivityHistory(req.user.id, { page, limit });
+    res.json({
+      activities,
+      pagination: {
+        current: page,
+        pages: Math.ceil(total / limit),
+        total,
+      },
     });
-    res.json({ activities });
   } catch (err) {
     sendServerError(res, err, '读取最近活动失败');
   }
@@ -1001,9 +1069,10 @@ exports.saveLearningProgress = async (req, res) => {
     await withTransaction(async (connection) => {
       await upsertLearningProgress(connection, req.user.id, progress);
     });
+    const { progress: savedProgress } = await readLearningProgress(req.user.id);
     res.json({
       message: '学习进度已同步',
-      progress: await readLearningProgress(req.user.id),
+      progress: savedProgress,
     });
   } catch (err) {
     console.error('同步学习进度失败:', err);
@@ -1064,13 +1133,24 @@ exports.deletePrivateWorkspace = async (req, res) => {
 
 exports.getShareRequests = async (req, res) => {
   try {
-    const shareRequests = await readPrivateShareRequests(req.user, {
+    const page = Math.max(Number(req.query.page) || 1, 1);
+    const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 100);
+    const { shareRequests, total } = await readPrivateShareRequests(req.user, {
       status: req.query.status,
       scope: req.query.scope,
-      limit: req.query.limit,
+      page,
+      limit,
       companyId: req.query.companyId,
     });
-    res.json({ canReview: canReviewShareRequests(req.user), shareRequests });
+    res.json({
+      canReview: canReviewShareRequests(req.user),
+      shareRequests,
+      pagination: {
+        current: page,
+        pages: Math.ceil(total / limit),
+        total,
+      },
+    });
   } catch (err) {
     sendServerError(res, err, '读取共享申请失败');
   }
@@ -1108,7 +1188,7 @@ exports.createShareRequest = async (req, res) => {
             ? '这条资料已通过共享审核并进入资料库'
             : '这条资料已有待审核共享申请',
           shareRequest: existingShareRequest,
-          shareRequests: await readPrivateShareRequests(req.user),
+          shareRequests: (await readPrivateShareRequests(req.user)).shareRequests,
         });
       }
     }
@@ -1170,7 +1250,7 @@ exports.createShareRequest = async (req, res) => {
     res.status(201).json({
       message: '共享申请已提交',
       shareRequest,
-      shareRequests: await readPrivateShareRequests(req.user),
+      shareRequests: (await readPrivateShareRequests(req.user)).shareRequests,
     });
   } catch (err) {
     console.error('提交共享申请失败:', err);
